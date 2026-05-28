@@ -95,7 +95,7 @@ openiye.com/
 
 ## 🚀 Local Quickstart Guide
 
-This quickstart guides contributors and our team in Japan to spin up both modules simultaneously in local development mode.
+This quickstart guides you to spin up both modules simultaneously in local development mode.
 
 ### Prerequisites
 - **Python**: Version `3.10` or higher
@@ -197,18 +197,5 @@ We follow strict design guidelines to maintain visual elegance and computational
 1. **Zero-Retention Principle**: Do not design endpoints that persist raw user vectors. Keep coordinate memory strictly ephemeral.
 2. **Modern Monospaced Accents**: Any new telemetry HUD overlay must strictly use CSS variables mapped to the main Sage Green HSL colors (`hsl(146, 23%, 62%)`).
 3. **TypeScript Strictness**: Any modifications to the 3D viewport components in `VectorCanvas.tsx` must maintain full type safety and zero use of `any`.
-
----
-
-## 🎌 For Team Collaboration (Tokyo ⇄ Global)
-*If you are running from our Tokyo office, ensure your shell environment is configured to standard UTF-8 before launching the vector test suite to render diagnostic signs correctly.*
-
-```bash
-# Set UTF-8 encoding in PowerShell
-$OutputEncoding = [System.Text.Encoding]::UTF8
-```
-
-For immediate assistance or integration access, ping the developer channels on Slack or file an issue directly in the local tracking repository.
-
 ---
 **IYE Engine** — *The intelligence of seeing, structured mathematically, visualized beautifully.*
