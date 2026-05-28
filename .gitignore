@@ -1,0 +1,108 @@
+# ==============================================================================
+# IYE - SYSTEM-WIDE ECLIPSE & RUNTIME EXCLUSIONS (.gitignore)
+# ==============================================================================
+# This configuration file ensures zero leakage of local runtimes, dynamic caches,
+# environment variables, and proprietary binaries to the public master repository.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. CORE PYTHON MATHEMATICAL SUB-SYSTEM & RUNTIME CACHES
+# ------------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+*.pyo
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Testing & Coverage
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.htmlcov/
+coverage.xml
+*.cover
+nosetests.xml
+pip-wheel-metadata/
+
+# ------------------------------------------------------------------------------
+# 2. NEXT.JS 3D VIEWPORT ENGINE & FRONTEND NODE DEPLOYMENT
+# ------------------------------------------------------------------------------
+node_modules/
+.next/
+out/
+dist/
+.docusaurus/
+.turbo/
+
+# Next.js build logs and diagnostic profiles
+yarn-debug.log*
+yarn-error.log*
+npm-debug.log*
+npm-error.log*
+pnpm-debug.log*
+.pnpm-debug.log*
+
+# ------------------------------------------------------------------------------
+# 3. ENVIRONMENT SECRETS & TELEMETRY CREDENTIALS
+# ------------------------------------------------------------------------------
+# Strictly prevent cryptographic leaks of private keys and development environment loops
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+*.env.*
+.iye/credentials.json
+
+# ------------------------------------------------------------------------------
+# 4. SYSTEM ARTIFACTS & OPERATING SYSTEM PLATES (Windows / macOS)
+# ------------------------------------------------------------------------------
+# System-specific database caches and hidden desktop descriptors
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ------------------------------------------------------------------------------
+# 5. IDE CONFIGURATIONS & COMPILER DIAGNOSTICS
+# ------------------------------------------------------------------------------
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo

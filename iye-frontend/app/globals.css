@@ -1,0 +1,90 @@
+/* iye-frontend/app/globals.css
+   ─────────────────────────────
+   Global reset and base styles.
+   Tailwind base + design system tokens.
+*/
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── CSS custom properties ─────────────────────────────────────────────────── */
+:root {
+  --color-base:      #121417;
+  --color-surface:   #181c21;
+  --color-border:    rgba(122, 154, 130, 0.18);
+  --color-sage:      #7A9A82;
+  --color-amber:     #C4A882;
+  --color-slate:     #8898AA;
+  --color-dim:       #445566;
+
+  --font-sans: var(--font-inter), 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', 'Fira Code', monospace;
+}
+
+/* ── Reset ─────────────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  width:      100%;
+  height:     100%;
+  overflow:   hidden;
+  background: var(--color-base);
+  color:      var(--color-slate);
+  font-family: var(--font-sans);
+  font-size:   14px;
+  line-height: 1.5;
+  -webkit-font-smoothing:  antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Scrollbar theming ──────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-base);
+}
+::-webkit-scrollbar-thumb {
+  background:    var(--color-dim);
+  border-radius: 2px;
+}
+
+/* ── Selection ──────────────────────────────────────────────────────────────── */
+::selection {
+  background: rgba(122, 154, 130, 0.25);
+  color:      var(--color-sage);
+}
+
+/* ── Spin utility (used by Loader icon) ─────────────────────────────────────── */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+/* ── Fade-in utility ────────────────────────────────────────────────────────── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0);   }
+}
+.animate-fade-in {
+  animation: fadeIn 0.25s ease-out both;
+}
+
+/* ── Focus ring reset for non-mouse users ───────────────────────────────────── */
+button:focus-visible {
+  outline: 2px solid var(--color-sage);
+  outline-offset: 2px;
+}
+button:focus:not(:focus-visible) {
+  outline: none;
+}
