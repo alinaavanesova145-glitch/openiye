@@ -34,8 +34,8 @@ import { FieldFrame } from '../hooks/useVectorField';
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
 
-const COLOR_NOMINAL = new THREE.Color('#7A9A82'); // muted sage green
-const COLOR_HEALED  = new THREE.Color('#C4A882'); // warm amber — visual alert
+const COLOR_NOMINAL = new THREE.Color('#e8c5c8'); // muted blush pink
+const COLOR_HEALED  = new THREE.Color('#ff2a6d'); // hot coral / neon magenta — visual alert
 const CONE_H        = 0.18;
 const CONE_R        = 0.045;
 const CONE_SEGS     = 7;
@@ -186,12 +186,12 @@ function SceneContent({ frame }: { frame: FieldFrame | null }) {
         color="#d0e4ff"
         castShadow={false}
       />
-      <pointLight position={[-6, -6, 4]}  intensity={0.65} color="#7A9A82" />
-      <pointLight position={[0,  10, -8]} intensity={0.40} color="#334455" />
+      <pointLight position={[-6, -6, 4]}  intensity={0.65} color="#e8c5c8" />
+      <pointLight position={[0,  10, -8]} intensity={0.40} color="#443538" />
 
       {/* Reference grid */}
       <gridHelper
-        args={[22, 44, '#1e2530', '#1a1e25']}
+        args={[22, 44, '#ff2a6d20', '#e8c5c808']}
         position={[0, -5, 0]}
       />
 
@@ -249,8 +249,8 @@ export default function VectorCanvas({
   const isLive = streamStatus === 'live' || streamStatus === 'healed';
   const isMock = streamStatus === 'mock';
   
-  const statusColor = isLive ? '#7A9A82' : isMock ? '#C4A882' : '#556677';
-  const statusIndicatorBg = isLive ? '#7A9A82' : isMock ? '#C4A882' : '#334455';
+  const statusColor = isLive ? '#e8c5c8' : isMock ? '#ff2a6d' : '#556677';
+  const statusIndicatorBg = isLive ? '#e8c5c8' : isMock ? '#ff2a6d' : '#334455';
   
   let label = 'connecting…';
   if (streamStatus === 'live') label = 'live stream';
@@ -262,7 +262,7 @@ export default function VectorCanvas({
       ref={mountRef}
       className={`relative w-full h-full ${className}`}
       data-renderer-tier={tier}
-      style={{ background: '#121417' }}
+      style={{ background: '#000000' }}
     >
       <Canvas
         camera={{ position: [0, 3, 12], fov: 55, near: 0.1, far: 500 }}
@@ -272,7 +272,7 @@ export default function VectorCanvas({
           powerPreference: 'high-performance',
         }}
         dpr={[1, tier === 'webgpu' ? 2 : 1.5]}
-        style={{ background: '#121417' }}
+        style={{ background: '#000000' }}
       >
         <SceneContent frame={frame} />
       </Canvas>
@@ -281,8 +281,8 @@ export default function VectorCanvas({
       <div
         className="absolute bottom-4 left-4 flex items-center gap-2 px-3 py-1.5 rounded-full"
         style={{
-          background:     'rgba(18,20,23,0.80)',
-          border:         '1px solid rgba(122,154,130,0.22)',
+          background:     'rgba(0,0,0,0.80)',
+          border:         '1px solid rgba(232,197,200,0.12)',
           backdropFilter: 'blur(10px)',
           WebkitBackdropFilter: 'blur(10px)',
           color:          statusColor,
@@ -300,9 +300,9 @@ export default function VectorCanvas({
             display:      'inline-block',
             flexShrink:   0,
             boxShadow:    isLive
-              ? '0 0 7px #7A9A82'
+              ? '0 0 7px #e8c5c8'
               : isMock
-              ? '0 0 7px #C4A882'
+              ? '0 0 7px #ff2a6d'
               : 'none',
           }}
         />

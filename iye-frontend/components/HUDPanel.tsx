@@ -37,10 +37,10 @@ import { RendererTier } from './VectorCanvas';
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
 
-const HUD_BG     = 'rgba(14,17,21,0.82)';
-const HUD_BORDER = 'rgba(122,154,130,0.20)';
-const SAGE       = '#7A9A82';
-const AMBER      = '#C4A882';
+const HUD_BG     = 'rgba(0, 0, 0, 0.6)';
+const HUD_BORDER = 'rgba(232, 197, 200, 0.12)';
+const BLUSH      = '#e8c5c8';
+const CORAL      = '#ff2a6d';
 const SLATE      = '#8898AA';
 const DIM        = '#445566';
 
@@ -50,7 +50,7 @@ function TelemetryRow({
   icon: Icon,
   label,
   value,
-  valueColor = SAGE,
+  valueColor = BLUSH,
 }: {
   icon: React.ComponentType<{ size?: number; strokeWidth?: number; color?: string }>;
   label: string;
@@ -90,12 +90,12 @@ function StatBlock({
   return (
     <div
       className="flex flex-col gap-0.5 px-3 py-2 rounded"
-      style={{ background: 'rgba(122,154,130,0.06)', border: `1px solid ${HUD_BORDER}` }}
+      style={{ background: 'rgba(232, 197, 200, 0.06)', border: `1px solid ${HUD_BORDER}` }}
     >
       <span style={{ fontSize: 9, color: DIM, letterSpacing: '0.1em', textTransform: 'lowercase' }}>
         {label}
       </span>
-      <span style={{ fontSize: 12, color: SAGE, fontFamily: 'ui-monospace, monospace', fontWeight: 600 }}>
+      <span style={{ fontSize: 12, color: BLUSH, fontFamily: 'ui-monospace, monospace', fontWeight: 600 }}>
         {typeof value === 'number' ? value.toFixed(4) : value}
       </span>
     </div>
@@ -112,9 +112,9 @@ const TIER_LABELS: Record<RendererTier, string> = {
 };
 
 const TIER_COLORS: Record<RendererTier, string> = {
-  webgpu:    SAGE,
-  webgl2:    SAGE,
-  webgl1:    AMBER,
+  webgpu:    BLUSH,
+  webgl2:    BLUSH,
+  webgl1:    CORAL,
   detecting: SLATE,
 };
 
@@ -164,8 +164,8 @@ export default function HUDPanel({
 
   const statusColor =
     !frame      ? DIM   :
-    isHealed    ? AMBER :
-    streamStatus === 'live' ? SAGE : AMBER;
+    isHealed    ? CORAL :
+    streamStatus === 'live' ? BLUSH : CORAL;
 
   const lastUpdated = frame
     ? new Date(frame.timestamp).toLocaleTimeString('en-US', {
@@ -199,14 +199,10 @@ export default function HUDPanel({
     <>
       {/* ── Main HUD panel ─────────────────────────────────────────────── */}
       <div
-        className="absolute top-4 right-4 flex flex-col animate-fade-in"
+        className="absolute top-4 right-4 flex flex-col animate-fade-in hud-panel-blush"
         style={{
           width:          260,
-          background:     HUD_BG,
-          border:         `1px solid ${HUD_BORDER}`,
           borderRadius:   12,
-          backdropFilter: 'blur(14px)',
-          WebkitBackdropFilter: 'blur(14px)',
           boxShadow:      '0 8px 32px rgba(0,0,0,0.45)',
           overflow:       'hidden',
           zIndex:         10,
@@ -219,8 +215,8 @@ export default function HUDPanel({
           onClick={() => setCollapsed((v) => !v)}
         >
           <div className="flex items-center gap-2">
-            <Zap size={13} color={SAGE} strokeWidth={1.8} />
-            <span style={{ fontSize: 11, color: SAGE, letterSpacing: '0.14em', fontWeight: 600 }}>
+            <Zap size={13} color={BLUSH} strokeWidth={1.8} />
+            <span style={{ fontSize: 11, color: BLUSH, letterSpacing: '0.14em', fontWeight: 600 }}>
               iye telemetry
             </span>
           </div>
@@ -266,11 +262,11 @@ export default function HUDPanel({
               className="flex items-center justify-center gap-2 w-full py-2 rounded-lg transition-all"
               style={{
                 background:    statsLoading
-                  ? 'rgba(122,154,130,0.08)'
-                  : 'rgba(122,154,130,0.14)',
-                border:        `1px solid ${statsLoading ? DIM : SAGE}40`,
+                  ? 'rgba(232, 197, 200, 0.08)'
+                  : 'rgba(232, 197, 200, 0.14)',
+                border:        `1px solid ${statsLoading ? DIM : BLUSH}40`,
                 cursor:        statsLoading || !frame ? 'not-allowed' : 'pointer',
-                color:         statsLoading ? SLATE : SAGE,
+                color:         statsLoading ? SLATE : BLUSH,
                 fontSize:      11,
                 letterSpacing: '0.1em',
                 fontWeight:    500,
@@ -284,7 +280,7 @@ export default function HUDPanel({
                 </>
               ) : (
                 <>
-                  <BarChart3 size={11} strokeWidth={1.8} color={SAGE} />
+                  <BarChart3 size={11} strokeWidth={1.8} color={BLUSH} />
                   run field_stats
                 </>
               )}
@@ -294,10 +290,10 @@ export default function HUDPanel({
             {statsError && (
               <div
                 className="flex items-center gap-2 mt-2 px-2 py-1.5 rounded"
-                style={{ background: 'rgba(200,80,80,0.10)', border: '1px solid rgba(200,80,80,0.25)' }}
+                style={{ background: 'rgba(255, 42, 109, 0.10)', border: '1px solid rgba(255, 42, 109, 0.25)' }}
               >
-                <AlertTriangle size={10} color={AMBER} />
-                <span style={{ fontSize: 10, color: AMBER, letterSpacing: '0.06em' }}>
+                <AlertTriangle size={10} color={CORAL} />
+                <span style={{ fontSize: 10, color: CORAL, letterSpacing: '0.06em' }}>
                   {statsError.slice(0, 60)}
                 </span>
               </div>
@@ -309,14 +305,10 @@ export default function HUDPanel({
       {/* ── Stats result panel ──────────────────────────────────────────── */}
       {statsVisible && toolResult && (
         <div
-          className="absolute top-4 left-4 flex flex-col animate-fade-in"
+          className="absolute top-4 left-4 flex flex-col animate-fade-in hud-panel-blush"
           style={{
             width:          280,
-            background:     HUD_BG,
-            border:         `1px solid ${HUD_BORDER}`,
             borderRadius:   12,
-            backdropFilter: 'blur(14px)',
-            WebkitBackdropFilter: 'blur(14px)',
             boxShadow:      '0 8px 32px rgba(0,0,0,0.45)',
             overflow:       'hidden',
             zIndex:         10,
@@ -328,8 +320,8 @@ export default function HUDPanel({
             style={{ borderBottom: `1px solid ${HUD_BORDER}` }}
           >
             <div className="flex items-center gap-2">
-              <CheckCircle2 size={12} color={SAGE} strokeWidth={1.8} />
-              <span style={{ fontSize: 11, color: SAGE, letterSpacing: '0.14em', fontWeight: 600 }}>
+              <CheckCircle2 size={12} color={BLUSH} strokeWidth={1.8} />
+              <span style={{ fontSize: 11, color: BLUSH, letterSpacing: '0.14em', fontWeight: 600 }}>
                 field_stats result
               </span>
             </div>

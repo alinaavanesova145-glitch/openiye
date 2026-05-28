@@ -10,11 +10,11 @@
 
 /* ── CSS custom properties ─────────────────────────────────────────────────── */
 :root {
-  --color-base:      #121417;
-  --color-surface:   #181c21;
-  --color-border:    rgba(122, 154, 130, 0.18);
-  --color-sage:      #7A9A82;
-  --color-amber:     #C4A882;
+  --color-base:      #000000;
+  --color-surface:   #0b0b0d;
+  --color-border:    rgba(232, 197, 200, 0.12);
+  --color-blush:     #e8c5c8;
+  --color-coral:     #ff2a6d;
   --color-slate:     #8898AA;
   --color-dim:       #445566;
 
@@ -59,8 +59,8 @@ body {
 
 /* ── Selection ──────────────────────────────────────────────────────────────── */
 ::selection {
-  background: rgba(122, 154, 130, 0.25);
-  color:      var(--color-sage);
+  background: rgba(232, 197, 200, 0.25);
+  color:      var(--color-blush);
 }
 
 /* ── Spin utility (used by Loader icon) ─────────────────────────────────────── */
@@ -82,9 +82,17 @@ body {
 
 /* ── Focus ring reset for non-mouse users ───────────────────────────────────── */
 button:focus-visible {
-  outline: 2px solid var(--color-sage);
+  outline: 2px solid var(--color-blush);
   outline-offset: 2px;
 }
 button:focus:not(:focus-visible) {
   outline: none;
+}
+
+/* ── Luxury Glassmorphic Blush HUD Panel ────────────────────────────────────── */
+.hud-panel-blush {
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(232, 197, 200, 0.12);
 }

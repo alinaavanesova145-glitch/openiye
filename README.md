@@ -8,8 +8,8 @@
                   |  👁️  |   IYE ENGINE V1.0
                    \     /
                     '───'
-    [SLATE GRAY BACKGROUNDS]  |  [SAGE GREEN ACCENTS]
-  [GLASSMORPHIC HUD OVERLAYS] |  [MONOSPACED TELEMETRY]
+    [PITCH BLACK BACKGROUNDS] |  [BLUSH PINK STATE]
+  [GLASSMORPHIC HUD OVERLAYS] |  [HOT CORAL ANOMALIES]
 ```
 
 ---
@@ -18,10 +18,11 @@
 
 **IYE** (derived from *Eye*) is built on a single, uncompromising principle: **A system is only as clear as the layout that renders it visible.** 
 
-Designed with an elite minimalist palette, IYE avoids unnecessary visual noise to focus strictly on spatial telemetry and geometric structures:
-- **Primary Canvas Background**: Deep OLED/Slate Gray (`#090d10`)
-- **Interactive Vectors & Accents**: Luminescent Sage Green (`#8bb39c` / `#a3c9b4`)
-- **System HUD & Controls**: High-transparency glassmorphic overlay panels with subtle backdrop-blur and precise monospaced typography.
+Designed with a premium, minimalist **"Blush Pink & Pitch Black" luxury developer aesthetic**, IYE uses a specialized tactical layout designed to optimize data-error and anomaly pattern recognition through warm-spectrum chromatic highlights:
+- **Primary Canvas Background**: Deep Pitch Black (`#000000` / `#0b0b0d`)
+- **Normal Telemetry State**: Muted, organic Blush Pink (`#e8c5c8`) representing healthy, sanitized, and nominal coordinate systems.
+- **Anomalous/Error State**: Saturated Hot Coral / Neon Magenta (`#ff2a6d`) representing data deviations, mathematical corruptions, and healed values.
+- **System HUD & Controls**: High-transparency glassmorphic `.hud-panel-blush` overlay panels with custom backdrop-blur and delicate blush-colored glow borders that catch viewport light.
 
 ---
 
@@ -195,7 +196,7 @@ python vector_engine.py
 
 We follow strict design guidelines to maintain visual elegance and computational stability:
 1. **Zero-Retention Principle**: Do not design endpoints that persist raw user vectors. Keep coordinate memory strictly ephemeral.
-2. **Modern Monospaced Accents**: Any new telemetry HUD overlay must strictly use CSS variables mapped to the main Sage Green HSL colors (`hsl(146, 23%, 62%)`).
+2. **Modern Monospaced Accents**: Any new telemetry HUD overlay must strictly use CSS variables mapped to the main Blush Pink design variables (e.g. `var(--color-blush)`).
 3. **TypeScript Strictness**: Any modifications to the 3D viewport components in `VectorCanvas.tsx` must maintain full type safety and zero use of `any`.
 ---
 **IYE Engine** — *The intelligence of seeing, structured mathematically, visualized beautifully.*
