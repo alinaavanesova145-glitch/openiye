@@ -23,8 +23,7 @@ export interface VectorCoordinate3D {
  * detector (temporal_engine.SlidingWindowDetector). "warmup" covers frames
  * emitted before the window has filled and before any temporal data exists.
  */
-export type Regime =
-  | 'warmup' | 'stable' | 'spike' | 'velocity' | 'acceleration' | 'drift'
+export type Regime = 'warmup' | 'stable' | 'spike' | 'velocity' | 'acceleration' | 'drift'
 
 export interface TemporalMetrics {
   z_max: number
@@ -35,7 +34,7 @@ export interface TemporalMetrics {
   composite: number
   composite_smoothed: number
   regime: Regime
-  window_fill: number   // 0..1
+  window_fill: number // 0..1
   dominant_dim: number
 }
 
@@ -53,7 +52,12 @@ export const DEFAULT_TEMPORAL_METRICS: TemporalMetrics = {
   dominant_dim: -1,
 }
 
-export const HOT_REGIMES: ReadonlySet<Regime> = new Set(['spike', 'velocity', 'acceleration', 'drift'])
+export const HOT_REGIMES: ReadonlySet<Regime> = new Set([
+  'spike',
+  'velocity',
+  'acceleration',
+  'drift',
+])
 
 export interface VectorFrame {
   frame_id: string
@@ -103,12 +107,21 @@ function parseTemporalMetrics(raw: unknown): TemporalMetrics {
   const t = raw as Record<string, unknown>
 
   const num = (v: unknown, fallback: number): number => (typeof v === 'number' ? v : fallback)
-  const regimeCandidates: Regime[] = ['warmup', 'stable', 'spike', 'velocity', 'acceleration', 'drift']
+  const regimeCandidates: Regime[] = [
+    'warmup',
+    'stable',
+    'spike',
+    'velocity',
+    'acceleration',
+    'drift',
+  ]
   const regime = regimeCandidates.includes(t.regime as Regime) ? (t.regime as Regime) : 'warmup'
 
   return {
     z_max: num(t.z_max, 0),
-    z_per_dim: Array.isArray(t.z_per_dim) ? (t.z_per_dim as unknown[]).filter((v): v is number => typeof v === 'number') : [],
+    z_per_dim: Array.isArray(t.z_per_dim)
+      ? (t.z_per_dim as unknown[]).filter((v): v is number => typeof v === 'number')
+      : [],
     velocity: num(t.velocity, 0),
     acceleration: num(t.acceleration, 0),
     drift_slope: num(t.drift_slope, 0),
@@ -267,7 +280,7 @@ export function useVectorStream(): VectorStreamResult {
     setStreamState('connecting')
 
     // Bypassing proxy definitions: pointing directly to the known running FastAPI layer
-    const wsUrl = "ws://127.0.0.1:8050/stream"
+    const wsUrl = 'ws://127.0.0.1:8050/stream'
 
     try {
       const ws = new WebSocket(wsUrl)
@@ -292,7 +305,11 @@ export function useVectorStream(): VectorStreamResult {
             parsed = JSON.parse(parsed)
           }
 
-          if (typeof parsed === 'object' && parsed !== null && 'type' in (parsed as Record<string, unknown>)) {
+          if (
+            typeof parsed === 'object' &&
+            parsed !== null &&
+            'type' in (parsed as Record<string, unknown>)
+          ) {
             const msg = parsed as Record<string, unknown>
 
             // ── Narrative message: async LLaMA/Ollama explanation for an anomaly frame ──
@@ -301,7 +318,8 @@ export function useVectorStream(): VectorStreamResult {
               const narrText = typeof msg.explanation === 'string' ? msg.explanation : ''
 
               const current = liveFrameRef.current
-              const matchedCurrentFrame = current !== null && narrId !== null && current.id === narrId
+              const matchedCurrentFrame =
+                current !== null && narrId !== null && current.id === narrId
 
               if (matchedCurrentFrame && current) {
                 const merged = { ...current, explanation: narrText }
@@ -336,7 +354,8 @@ export function useVectorStream(): VectorStreamResult {
                 })
               }
 
-              const id = typeof msg.id === 'string' ? msg.id : Math.random().toString(36).substring(2, 15)
+              const id =
+                typeof msg.id === 'string' ? msg.id : Math.random().toString(36).substring(2, 15)
               const status = msg.status === 'ANOMALY' ? 'ANOMALY' : 'NOMINAL'
               const temporal = parseTemporalMetrics(msg.temporal)
               const explanation = typeof msg.explanation === 'string' ? msg.explanation : null
@@ -348,11 +367,14 @@ export function useVectorStream(): VectorStreamResult {
               const frame: VectorFrame = {
                 frame_id: id,
                 id,
-                timestamp: typeof msg.timestamp === 'string' ? msg.timestamp : new Date().toISOString(),
+                timestamp:
+                  typeof msg.timestamp === 'string' ? msg.timestamp : new Date().toISOString(),
                 status,
                 point_count: coordsObjects.length,
                 coordinates: coordsObjects,
-                cluster_labels: Array.isArray(msg.cluster_labels) ? (msg.cluster_labels as number[]) : [],
+                cluster_labels: Array.isArray(msg.cluster_labels)
+                  ? (msg.cluster_labels as number[])
+                  : [],
                 anomaly_indices: parsedAnomalies,
                 explanation,
                 axis_mapping: null,
@@ -380,10 +402,15 @@ export function useVectorStream(): VectorStreamResult {
               })
             }
 
-            const obj = (parsed && typeof parsed === 'object') ? (parsed as Record<string, unknown>) : {}
+            const obj =
+              parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {}
 
-            const frameId = typeof obj.frame_id === 'string' ? obj.frame_id : Math.random().toString(36).substring(2, 15)
-            const timestamp = typeof obj.timestamp === 'string' ? obj.timestamp : new Date().toISOString()
+            const frameId =
+              typeof obj.frame_id === 'string'
+                ? obj.frame_id
+                : Math.random().toString(36).substring(2, 15)
+            const timestamp =
+              typeof obj.timestamp === 'string' ? obj.timestamp : new Date().toISOString()
             const status = obj.status === 'ANOMALY' ? 'ANOMALY' : 'NOMINAL'
 
             temporalRef.current = DEFAULT_TEMPORAL_METRICS
@@ -395,7 +422,9 @@ export function useVectorStream(): VectorStreamResult {
               status,
               point_count: coordsObjects.length,
               coordinates: coordsObjects,
-              cluster_labels: Array.isArray(obj.cluster_labels) ? (obj.cluster_labels as number[]) : [],
+              cluster_labels: Array.isArray(obj.cluster_labels)
+                ? (obj.cluster_labels as number[])
+                : [],
               anomaly_indices: parsedAnomalies,
               explanation: typeof obj.explanation === 'string' ? obj.explanation : null,
               axis_mapping: null,
@@ -422,6 +451,11 @@ export function useVectorStream(): VectorStreamResult {
     } catch (err) {
       scheduleReconnect()
     }
+    // connect and scheduleReconnect are mutually recursive (each calls the
+    // other); scheduleReconnect is declared below with `[connect]` as its own
+    // dependency, so adding it here would form a re-creation cycle instead of
+    // stabilizing either callback.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // ── Exponential backoff reconnection ────────────────────────────────────

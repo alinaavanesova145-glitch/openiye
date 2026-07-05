@@ -37,18 +37,21 @@ const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileData }) => {
   const [droppedFile, setDroppedFile] = useState<DroppedFile | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const processFile = useCallback((file: File) => {
-    setDroppedFile({ name: file.name, size: file.size, lastModified: file.lastModified })
+  const processFile = useCallback(
+    (file: File) => {
+      setDroppedFile({ name: file.name, size: file.size, lastModified: file.lastModified })
 
-    const reader = new FileReader()
-    reader.onload = () => {
-      const buffer = reader.result
-      if (buffer instanceof ArrayBuffer) {
-        onFileData(new Float32Array(buffer))
+      const reader = new FileReader()
+      reader.onload = () => {
+        const buffer = reader.result
+        if (buffer instanceof ArrayBuffer) {
+          onFileData(new Float32Array(buffer))
+        }
       }
-    }
-    reader.readAsArrayBuffer(file)
-  }, [onFileData])
+      reader.readAsArrayBuffer(file)
+    },
+    [onFileData],
+  )
 
   const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -59,21 +62,27 @@ const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileData }) => {
     setIsDragging(false)
   }, [])
 
-  const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    setIsDragging(false)
-    const file = e.dataTransfer.files[0]
-    if (file) {
-      processFile(file)
-    }
-  }, [processFile])
+  const handleDrop = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      e.preventDefault()
+      setIsDragging(false)
+      const file = e.dataTransfer.files[0]
+      if (file) {
+        processFile(file)
+      }
+    },
+    [processFile],
+  )
 
-  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (file) {
-      processFile(file)
-    }
-  }, [processFile])
+  const handleInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0]
+      if (file) {
+        processFile(file)
+      }
+    },
+    [processFile],
+  )
 
   const formatBytes = (bytes: number): string => {
     if (bytes < 1024) return `${String(bytes)} b`
@@ -83,13 +92,15 @@ const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileData }) => {
 
   return (
     <div style={{ marginBottom: 28 }}>
-      <p style={{
-        margin: '0 0 10px 0',
-        fontSize: 9,
-        letterSpacing: '0.2em',
-        textTransform: 'uppercase',
-        color: COLORS.textMuted,
-      }}>
+      <p
+        style={{
+          margin: '0 0 10px 0',
+          fontSize: 9,
+          letterSpacing: '0.2em',
+          textTransform: 'uppercase',
+          color: COLORS.textMuted,
+        }}
+      >
         data source
       </p>
 
@@ -124,14 +135,16 @@ const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileData }) => {
 
         {droppedFile ? (
           <div>
-            <div style={{
-              fontSize: 11,
-              color: COLORS.pink,
-              marginBottom: 4,
-              fontWeight: 500,
-              letterSpacing: '0.04em',
-              wordBreak: 'break-all',
-            }}>
+            <div
+              style={{
+                fontSize: 11,
+                color: COLORS.pink,
+                marginBottom: 4,
+                fontWeight: 500,
+                letterSpacing: '0.04em',
+                wordBreak: 'break-all',
+              }}
+            >
               {droppedFile.name}
             </div>
             <div style={{ fontSize: 9, color: COLORS.textMuted, letterSpacing: '0.08em' }}>
@@ -140,21 +153,26 @@ const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileData }) => {
           </div>
         ) : (
           <div>
-            <div style={{
-              fontSize: 18,
-              marginBottom: 8,
-              opacity: 0.4,
-              color: COLORS.pink,
-            }}>
+            <div
+              style={{
+                fontSize: 18,
+                marginBottom: 8,
+                opacity: 0.4,
+                color: COLORS.pink,
+              }}
+            >
               ↓
             </div>
-            <div style={{
-              fontSize: 10,
-              color: COLORS.textMuted,
-              letterSpacing: '0.08em',
-              lineHeight: 1.6,
-            }}>
-              drop file or click<br />
+            <div
+              style={{
+                fontSize: 10,
+                color: COLORS.textMuted,
+                letterSpacing: '0.08em',
+                lineHeight: 1.6,
+              }}
+            >
+              drop file or click
+              <br />
               <span style={{ opacity: 0.5 }}>json · csv · npy · bin</span>
             </div>
           </div>
@@ -166,29 +184,35 @@ const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileData }) => {
 
 // ─── Viewport Panel ───────────────────────────────────────────────────────────
 
-const ViewportPanel: React.FC<{ activeFrame: any }> = () => (
-  <div style={{
-    flex: 1,
-    height: '100vh',
-    position: 'relative',
-    overflow: 'hidden',
-    background: COLORS.black,
-  }}>
+const ViewportPanel: React.FC = () => (
+  <div
+    style={{
+      flex: 1,
+      height: '100vh',
+      position: 'relative',
+      overflow: 'hidden',
+      background: COLORS.black,
+    }}
+  >
     <VectorViewport />
 
     {/* Minimal top-left label */}
-    <div style={{
-      position: 'absolute',
-      top: 20,
-      left: 20,
-      pointerEvents: 'none',
-    }}>
-      <span style={{
-        fontSize: 9,
-        letterSpacing: '0.24em',
-        color: 'rgba(255, 182, 193, 0.35)',
-        textTransform: 'uppercase',
-      }}>
+    <div
+      style={{
+        position: 'absolute',
+        top: 20,
+        left: 20,
+        pointerEvents: 'none',
+      }}
+    >
+      <span
+        style={{
+          fontSize: 9,
+          letterSpacing: '0.24em',
+          color: 'rgba(255, 182, 193, 0.35)',
+          textTransform: 'uppercase',
+        }}
+      >
         vector viewport
       </span>
     </div>
@@ -227,16 +251,14 @@ const GlobalStyles: React.FC = () => (
 // ─── Root App ─────────────────────────────────────────────────────────────────
 
 const App: React.FC = () => {
-  const {
-    activeFrame,
-    streamState,
-    processVectors,
-    isLive,
-  } = useVectorDiagnostics()
+  const { activeFrame, streamState, processVectors, isLive } = useVectorDiagnostics()
 
-  const handleFileData = useCallback((data: Float32Array) => {
-    void processVectors(data)
-  }, [processVectors])
+  const handleFileData = useCallback(
+    (data: Float32Array) => {
+      void processVectors(data)
+    },
+    [processVectors],
+  )
 
   return (
     <>
@@ -253,31 +275,29 @@ const App: React.FC = () => {
         }}
       >
         {/* Left: 3D Vector Viewport (70%) */}
-        <ViewportPanel activeFrame={activeFrame} />
+        <ViewportPanel />
 
         {/* Right: Diagnostic Sidebar (30%) */}
-        <div style={{
-          width: '30%',
-          minWidth: 240,
-          maxWidth: 360,
-          height: '100vh',
-          display: 'flex',
-          flexDirection: 'column',
-          background: COLORS.black,
-          borderLeft: `1px solid ${COLORS.divider}`,
-          flexShrink: 0,
-        }}>
+        <div
+          style={{
+            width: '30%',
+            minWidth: 240,
+            maxWidth: 360,
+            height: '100vh',
+            display: 'flex',
+            flexDirection: 'column',
+            background: COLORS.black,
+            borderLeft: `1px solid ${COLORS.divider}`,
+            flexShrink: 0,
+          }}
+        >
           {/* File drop zone sits above the diagnostic panel */}
           <div style={{ padding: '32px 24px 0 24px' }}>
             <FileDropZone onFileData={handleFileData} />
           </div>
 
           {/* Diagnostic sidebar fills the rest */}
-          <DiagnosticSidebar
-            streamState={streamState}
-            activeFrame={activeFrame}
-            isLive={isLive}
-          />
+          <DiagnosticSidebar streamState={streamState} activeFrame={activeFrame} isLive={isLive} />
         </div>
       </div>
     </>

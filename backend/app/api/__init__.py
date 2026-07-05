@@ -1,5 +1,6 @@
 import os
 import sys
+
 from fastapi import FastAPI
 
 # Ensure the SDK package is importable
@@ -8,10 +9,10 @@ _sdk_path = os.path.join(_project_root, "sdk")
 if _sdk_path not in sys.path:
     sys.path.insert(0, _sdk_path)
 
-from app.api.routes import inference, canvas, health
-
 # Late import after path setup
-from iye.server import ws_app, vector_stream_endpoint  # noqa: E402
+from iye.server import vector_stream_endpoint  # noqa: E402
+
+from app.api.routes import canvas, health, inference  # noqa: E402
 
 app = FastAPI(
     title="IYE Backend API",
