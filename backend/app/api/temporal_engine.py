@@ -77,11 +77,22 @@ class TemporalEngine:
         coordinates: np.ndarray,
         timestamp: str,
         anomaly_indices: List[int],
+        cluster_labels: Optional[List[int]] = None,
     ) -> TemporalMetrics:
         """Fold one frame's coordinates into the sliding window and derive metrics."""
         with self._lock:
             n_points = coordinates.shape[0] if coordinates.size else 0
-            centroid = coordinates.mean(axis=0) if n_points else np.zeros(3)
+
+            # Centroid tracking excludes HDBSCAN noise (-1) so a handful of stray
+            # outlier points can't drag the whole-frame velocity/drift signal.
+            if cluster_labels is not None and n_points:
+                labels_arr = np.asarray(cluster_labels)
+                mask = labels_arr != -1
+                clustered_coords = coordinates[mask] if mask.any() else coordinates
+            else:
+                clustered_coords = coordinates
+
+            centroid = clustered_coords.mean(axis=0) if clustered_coords.shape[0] else np.zeros(3)
             now = _parse_timestamp(timestamp)
 
             # Velocity: centroid displacement per unit time since the previous frame.

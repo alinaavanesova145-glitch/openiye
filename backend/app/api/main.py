@@ -200,6 +200,7 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
         coordinates=coords,
         timestamp=timestamp,
         anomaly_indices=anomaly_idx,
+        cluster_labels=labels.tolist(),
     )
 
     status = "ANOMALY" if anomaly_idx else "NOMINAL"
