@@ -112,4 +112,55 @@ test) still passes after these changes — no field names or the
   margin is not large — a slower recovery cadence or a longer spike would
   need re-validation.
 - `composite`/`composite_smoothed` (EMA of `anomaly_ratio*3 + z_max_clamped*2`)
+
+## Recalibration runbook (once real telemetry exists)
+
+The calibration above is synthetic (see "Honest caveats"). Once real traffic
+exists, re-derive it against actual data instead of trusting these numbers
+indefinitely:
+
+1. **Capture.** Set `IYE_CAPTURE_PATH=/path/to/capture.jsonl` before starting
+   the backend (`IYE_CAPTURE_PATH=./capture.jsonl ./boot.sh`, or export it in
+   whatever process manager runs production). Every ingested frame's raw
+   input — exactly what `TemporalEngine.process_frame()` consumes — is
+   appended as one JSON line. Zero overhead when unset: the env var is read
+   once at import time (`backend/app/api/capture.py`), and `capture_frame()`
+   is a single `is None` check away from a no-op when disabled. Let it run
+   long enough to cover the traffic patterns you care about (steady-state,
+   any known bursts, etc.).
+2. **Replay.** From `backend/`:
+   ```
+   .venv/bin/python -m tools.replay_calibration /path/to/capture.jsonl
+   ```
+   This instantiates `TemporalEngine()` exactly as `main.py` does (same
+   import, no copy-pasted constructor args) and replays the capture using
+   the *recorded* timestamps — `TemporalEngine` derives `dt` from them
+   internally, so no wall-clock sleeping is involved and replay is fast
+   regardless of how long the real capture window was.
+3. **Read the histograms.** The report includes p50/p95/p99/max for
+   `velocity`, `acceleration`, and `drift` (in the engine's sigma-normalized
+   units — see the field table above). Compare against the current
+   thresholds in `backend/app/api/temporal_engine.py`
+   (`VELOCITY_Z_THRESHOLD`, `ACCELERATION_Z_THRESHOLD`, `DRIFT_Z_THRESHOLD`):
+   if the real p99 sits well above or below where these constants were set
+   (empirically, near the *synthetic* p99 — see "Calibration applied" above),
+   the thresholds are miscalibrated for real traffic and need adjusting.
+4. **Adjust and re-run gates.** Change the threshold constants, then re-run
+   *both* `tests/audit_temporal_noise.py` (synthetic, must still pass — it's
+   the regression guard) and the replay (real, should now report a hot rate
+   under 2% and per-channel exceedance under 3%, same as the synthetic
+   gates). If real traffic's *shape* differs from the synthetic model
+   (different point count, cadence, or coordinate scale — see the
+   "Assumptions" section above), also update `audit_temporal_noise.py`'s
+   constants to match, so the synthetic gate stays a meaningful regression
+   guard rather than testing a stale scenario.
+5. **Document the new numbers.** Update the "Test conditions" and "After"
+   tables above (or add a new dated section, following this file's existing
+   style) with the real-telemetry-derived thresholds and the date/traffic
+   window they were derived from.
+
+`backend/tools/calibration_metrics.py` is the shared accounting core behind
+both `audit_temporal_noise.py` and `replay_calibration.py` — the two can
+never disagree about how a metric is computed, since they call the same
+`CalibrationMetrics.record()`/`.print_report()`.
   were not part of this audit's explicit gates and were left unchanged.

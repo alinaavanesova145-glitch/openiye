@@ -46,6 +46,7 @@ for _p in [_project_root, _backend_dir, os.path.join(_project_root, "sdk")]:
 import iye  # type: ignore # noqa: E402
 from iye.server import Coordinate3D, VectorFramePayload  # type: ignore # noqa: E402
 
+from app.api.capture import capture_frame  # noqa: E402
 from app.api.temporal_engine import TemporalEngine  # noqa: E402
 
 # ─── Logger ───────────────────────────────────────────────────────────────────
@@ -257,6 +258,15 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
 
     frame_id  = str(uuid.uuid4())
     timestamp = datetime.now(tz=timezone.utc).isoformat()
+
+    # Opt-in recalibration capture (IYE_CAPTURE_PATH) — exactly the raw input
+    # TemporalEngine.process_frame consumes below. No-op (zero file I/O) when unset.
+    capture_frame(
+        coordinates=coords,
+        timestamp=timestamp,
+        anomaly_indices=anomaly_idx,
+        cluster_labels=labels.tolist(),
+    )
 
     # Stateful sliding-window temporal features (velocity, acceleration, drift,
     # EMA-smoothed composite anomaly score) — additive, rides in payload.temporal.

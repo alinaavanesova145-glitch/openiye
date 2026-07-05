@@ -5,6 +5,11 @@ Feeds the live TemporalEngine, instantiated exactly as main.py does, synthetic
 nominal Gaussian traffic, a hard spike, and a slow linear drift, and reports
 the false-positive / detection statistics from the Phase 0 audit gates.
 
+Metric accounting (hot-rate, exceedance, latch events, percentile histograms)
+lives in tools/calibration_metrics.py, shared with tools/replay_calibration.py
+so the synthetic audit and the real-telemetry replay can never disagree about
+how a metric is computed.
+
 Assumptions (documented since they scale velocity/acceleration directly):
   - 16 points per frame, matching the existing pytest fixtures.
   - 1.0s between frames (a plausible telemetry cadence; not measured from
@@ -31,13 +36,12 @@ from app.api.temporal_engine import (  # noqa: E402
     VELOCITY_Z_THRESHOLD,
     TemporalEngine,
 )
+from tools.calibration_metrics import HOT_REGIMES, CalibrationMetrics  # noqa: E402
 
 N_POINTS = 16
 DT_SECONDS = 1.0
 NOISE_SIGMA = 1.0
 SEED = 42
-
-HOT_REGIMES = {"spike", "velocity", "acceleration", "drift"}
 
 
 def make_frame(rng, center, sigma=NOISE_SIGMA, n_points=N_POINTS, noise_labels=2):
@@ -52,36 +56,25 @@ def iso(t):
     return t.isoformat()
 
 
+def new_metrics() -> CalibrationMetrics:
+    return CalibrationMetrics(
+        velocity_threshold=VELOCITY_Z_THRESHOLD,
+        acceleration_threshold=ACCELERATION_Z_THRESHOLD,
+        drift_threshold=DRIFT_Z_THRESHOLD,
+    )
+
+
 def run_nominal(engine, rng, n_frames, t0):
-    hot_count = 0
-    exceed = {"velocity": 0, "acceleration": 0, "drift": 0}
-    regimes = []
+    metrics = new_metrics()
     t = t0
     for _ in range(n_frames):
         coords, labels = make_frame(rng, center=np.zeros(3))
         t = t + timedelta(seconds=DT_SECONDS)
-        m = engine.process_frame(coordinates=coords, timestamp=iso(t), anomaly_indices=[], cluster_labels=labels)
-        regimes.append(m.regime)
-        if m.regime in HOT_REGIMES:
-            hot_count += 1
-        if abs(m.velocity) > VELOCITY_Z_THRESHOLD:
-            exceed["velocity"] += 1
-        if abs(m.acceleration) > ACCELERATION_Z_THRESHOLD:
-            exceed["acceleration"] += 1
-        if abs(m.drift_slope) > DRIFT_Z_THRESHOLD:
-            exceed["drift"] += 1
-    return hot_count, exceed, regimes, t
-
-
-def count_distinct_latch_events(regimes):
-    events = 0
-    prev_hot = False
-    for r in regimes:
-        hot = r in HOT_REGIMES
-        if hot and not prev_hot:
-            events += 1
-        prev_hot = hot
-    return events
+        m = engine.process_frame(
+            coordinates=coords, timestamp=iso(t), anomaly_indices=[], cluster_labels=labels
+        )
+        metrics.record(m)
+    return metrics, t
 
 
 def main():
@@ -90,20 +83,14 @@ def main():
 
     print("=== Gate 1: 2000 nominal Gaussian frames ===")
     engine1 = TemporalEngine()
-    hot_count, exceed, regimes, _ = run_nominal(engine1, rng, 2000, t0)
-    hot_rate = hot_count / 2000
-    latch_events = count_distinct_latch_events(regimes)
-    print(f"latched ANOMALY (hot regime) frame rate: {hot_rate:.4f} (gate < 0.02)")
-    print(f"distinct false latch events: {latch_events}")
-    for k, v in exceed.items():
-        print(f"per-channel exceedance [{k}]: {v / 2000:.4f} (gate < 0.03)")
-    gate1_pass = hot_rate < 0.02 and all(v / 2000 < 0.03 for v in exceed.values())
+    metrics1, _ = run_nominal(engine1, rng, 2000, t0)
+    gate1_pass = metrics1.print_report()
     print(f"GATE 1 {'PASS' if gate1_pass else 'FAIL'}")
 
     print()
     print("=== Gate 2: hard spike (6 frames) + recovery ===")
     engine2 = TemporalEngine()
-    _, _, _, t_after_warmup = run_nominal(engine2, rng, 60, t0)
+    _, t_after_warmup = run_nominal(engine2, rng, 60, t0)
     t = t_after_warmup
     spike_regimes = []
     spike_metrics = []
@@ -111,7 +98,10 @@ def main():
         coords, labels = make_frame(rng, center=np.array([30.0, 0.0, 0.0]))
         t = t + timedelta(seconds=DT_SECONDS)
         m = engine2.process_frame(
-            coordinates=coords, timestamp=iso(t), anomaly_indices=list(range(N_POINTS)), cluster_labels=labels
+            coordinates=coords,
+            timestamp=iso(t),
+            anomaly_indices=list(range(N_POINTS)),
+            cluster_labels=labels,
         )
         spike_regimes.append(m.regime)
         spike_metrics.append(m)
@@ -133,7 +123,7 @@ def main():
     print()
     print("=== Gate 3: slow linear drift over 140 frames ===")
     engine3 = TemporalEngine()
-    _, _, _, t_after_warmup3 = run_nominal(engine3, rng, 60, t0)
+    _, t_after_warmup3 = run_nominal(engine3, rng, 60, t0)
     t = t_after_warmup3
     drift_regimes = []
     last_metrics = None
