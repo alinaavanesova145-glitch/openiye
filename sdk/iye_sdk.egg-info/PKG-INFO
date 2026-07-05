@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: iye-sdk
+Version: 1.0.0
+Summary: Python SDK for the IYE 3D structural data anomaly engine
+Author: IYE Core Infrastructure Team
+Requires-Python: >=3.9
+Requires-Dist: numpy>=1.26.0
+Requires-Dist: scipy>=1.12.0
+Requires-Dist: umap-learn>=0.5.5
+Requires-Dist: hdbscan>=0.8.33
+Requires-Dist: requests>=2.31.0
+Requires-Dist: pydantic>=2.6.0
+Dynamic: author
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary

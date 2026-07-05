@@ -1,0 +1,140 @@
+/* ── IYE Global Reset ─────────────────────────────────────────────────────── */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  height: 100%;
+  background: #000000;
+}
+
+body {
+  height: 100%;
+  background: #000000;
+  color: rgba(255, 255, 255, 0.88);
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+  background: #000000;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 182, 193, 0.2);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 182, 193, 0.4);
+}
+
+/* ── Animations ──────────────────────────────────────────────────────────── */
+
+@keyframes iye-pulse {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 8px #ffb6c1;
+  }
+  50% {
+    opacity: 0.4;
+    box-shadow: 0 0 3px #ffb6c1;
+  }
+}
+
+/* ── Utility ─────────────────────────────────────────────────────────────── */
+
+canvas {
+  display: block;
+}
+
+/* ── Tactical AI Core Terminal ───────────────────────────────────────────── */
+
+@keyframes iye-terminal-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.tactical-terminal-card {
+  position: absolute;
+  left: 20px;
+  right: 20px;
+  bottom: 20px;
+  z-index: 10;
+  padding: 14px 16px;
+  background: rgba(0, 0, 0, 0.72);
+  border: 1px solid rgba(255, 182, 193, 0.25);
+  border-left: 2px solid #ff00ff;
+  border-radius: 6px;
+  backdrop-filter: blur(6px);
+  font-family: 'Courier New', Courier, monospace;
+  pointer-events: none;
+  animation: iye-terminal-in 0.35s ease-out;
+}
+
+.tactical-terminal-card .status-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #ff00ff;
+  text-shadow: 0 0 6px rgba(255, 0, 255, 0.6);
+  margin-bottom: 6px;
+}
+
+.tactical-terminal-card .regime-tag {
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: lowercase;
+}
+
+.tactical-terminal-card .explanation-text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.tactical-terminal-card .narrative-history {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 182, 193, 0.12);
+}
+
+.tactical-terminal-card .narrative-history-entry {
+  margin: 0 0 4px 0;
+  font-size: 10px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.tactical-terminal-card .narrative-history-entry:last-child {
+  margin-bottom: 0;
+}

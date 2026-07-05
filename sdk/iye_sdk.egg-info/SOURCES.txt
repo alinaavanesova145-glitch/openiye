@@ -1,0 +1,8 @@
+setup.py
+iye/__init__.py
+iye/server.py
+iye_sdk.egg-info/PKG-INFO
+iye_sdk.egg-info/SOURCES.txt
+iye_sdk.egg-info/dependency_links.txt
+iye_sdk.egg-info/requires.txt
+iye_sdk.egg-info/top_level.txt

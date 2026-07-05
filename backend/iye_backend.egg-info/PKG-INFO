@@ -1,0 +1,28 @@
+Metadata-Version: 2.4
+Name: iye-backend
+Version: 0.1.0
+Summary: IYE DeepTech Startup Backend API
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.110.0
+Requires-Dist: uvicorn[standard]>=0.28.0
+Requires-Dist: pydantic>=2.6.0
+Requires-Dist: python-dotenv>=1.0.0
+
+# FastAPI backend for IYE
+
+## Setup
+
+1. Create a virtual environment:
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+2. Install in editable mode:
+   ```bash
+   pip install -e .
+   ```
+3. Run the development server:
+   ```bash
+   python main.py
+   ```
