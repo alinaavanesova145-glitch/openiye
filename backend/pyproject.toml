@@ -18,11 +18,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["ruff>=0.4.0"]
+dev = ["ruff>=0.4.0", "websockets>=12.0"]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["app*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "e2e: hermetic end-to-end tests that launch a real uvicorn subprocess (slower; run explicitly excluded via -m 'not e2e' if needed)",
+]
 
 [tool.ruff]
 line-length = 110

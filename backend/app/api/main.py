@@ -56,7 +56,7 @@ logger = logging.getLogger("iye.api")
 
 # ─── Cognitive AI Core (local LLaMA via Ollama) ──────────────────────────────
 
-OLLAMA_API_URL = "http://localhost:11434/api/generate"
+OLLAMA_API_URL = os.environ.get("OLLAMA_API_URL", "http://localhost:11434/api/generate")
 
 
 async def generate_anomaly_explanation(metrics_summary: str) -> str:

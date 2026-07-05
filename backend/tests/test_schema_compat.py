@@ -64,13 +64,7 @@ def test_anomaly_frame_explanation_is_null_until_narrative_arrives():
     assert payload["explanation"] is None
 
 
-# NOTE: an end-to-end "narrative arrives as a separate WS message" test was
-# attempted here using client.websocket_connect() + client.post(), but it
-# hangs indefinitely under Starlette's TestClient: each TestClient call runs
-# the ASGI app on a short-lived event loop that is torn down as soon as the
-# HTTP response is returned, before the fire-and-forget asyncio.create_task
-# narrative task ever gets scheduled. This is a TestClient artifact, not a
-# production bug — verified manually against a real running uvicorn process
-# with a real `websockets` client: the frame broadcasts immediately with
-# explanation=None, and the {"type": "narrative", "id": ...} message follows
-# shortly after (see docs/idealization_report.md for the transcript).
+# The "narrative arrives as a separate WS message" gap noted above is now
+# covered by an automated, hermetic end-to-end test — see
+# tests/test_e2e_narrative.py (real uvicorn subprocess, stubbed Ollama;
+# TestClient can't observe this behavior, see that file's docstring for why).
