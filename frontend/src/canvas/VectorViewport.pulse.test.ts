@@ -7,6 +7,7 @@ import {
   VELOCITY_FREQ_SCALE,
   computeBeaconPulseAmplitude,
   computeBeaconPulseFrequencyHz,
+  resolveExplanationDisplay,
 } from './VectorViewport'
 
 describe('computeBeaconPulseFrequencyHz', () => {
@@ -59,5 +60,20 @@ describe('computeBeaconPulseAmplitude', () => {
     for (let i = 1; i < results.length; i++) {
       expect(results[i]).toBeGreaterThanOrEqual(results[i - 1])
     }
+  })
+})
+
+describe('resolveExplanationDisplay', () => {
+  it('returns null for a NOMINAL frame regardless of explanation', () => {
+    expect(resolveExplanationDisplay('NOMINAL', null)).toBeNull()
+    expect(resolveExplanationDisplay('NOMINAL', 'System nominal.')).toBeNull()
+  })
+
+  it('returns the "analyzing…" placeholder for an ANOMALY frame with a pending (null) narrative', () => {
+    expect(resolveExplanationDisplay('ANOMALY', null)).toBe('analyzing…')
+  })
+
+  it('returns the real explanation once the narrative has arrived', () => {
+    expect(resolveExplanationDisplay('ANOMALY', 'structural drift on axis 2')).toBe('structural drift on axis 2')
   })
 })

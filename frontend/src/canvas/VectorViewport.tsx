@@ -245,6 +245,12 @@ interface BeaconTooltipInfo {
     status: 'NOMINAL' | 'ANOMALY';
 }
 
+/** Tooltip text while the narrative is still pending vs. resolved (or a nominal frame). */
+export function resolveExplanationDisplay(status: 'NOMINAL' | 'ANOMALY', explanation: string | null): string | null {
+    if (status !== 'ANOMALY') return null
+    return explanation ?? 'analyzing…';
+}
+
 interface AnomalyBeaconProps {
     position: [number, number, number];
     anomalyIndex: number;
@@ -315,8 +321,10 @@ function AnomalyBeacon({ position, anomalyIndex, temporalRef, tooltipInfo }: Ano
                             <div className="beacon-tooltip-row"><span>velocity</span><span>{tooltipInfo.temporal.velocity.toFixed(2)}</span></div>
                             <div className="beacon-tooltip-row"><span>composite_smoothed</span><span>{tooltipInfo.temporal.composite_smoothed.toFixed(2)}</span></div>
                             <div className="beacon-tooltip-row"><span>z_max</span><span>{tooltipInfo.temporal.z_max.toFixed(2)}</span></div>
-                            {tooltipInfo.status === 'ANOMALY' && (
-                                <p className="beacon-tooltip-explanation">{tooltipInfo.explanation ?? 'analyzing…'}</p>
+                            {resolveExplanationDisplay(tooltipInfo.status, tooltipInfo.explanation) !== null && (
+                                <p className="beacon-tooltip-explanation">
+                                    {resolveExplanationDisplay(tooltipInfo.status, tooltipInfo.explanation)}
+                                </p>
                             )}
                         </div>
                     </Html>
@@ -459,8 +467,10 @@ export default function VectorViewport() {
                         <span>AI CORE ANALYSIS</span>
                         <span className="regime-tag" style={{ color: regimeColor }}>{regime}</span>
                     </div>
-                    {liveFrame.status === 'ANOMALY' && (
-                        <p className="explanation-text">{liveFrame.explanation ?? 'analyzing…'}</p>
+                    {resolveExplanationDisplay(liveFrame.status, liveFrame.explanation) !== null && (
+                        <p className="explanation-text">
+                            {resolveExplanationDisplay(liveFrame.status, liveFrame.explanation)}
+                        </p>
                     )}
                     {/* Narratives whose frame was already replaced by the time they arrived —
                         surfaced here instead of being dropped silently. */}

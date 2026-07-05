@@ -242,6 +242,9 @@ const FrameMetadata: React.FC<{ frame: VectorFrame }> = ({ frame }) => {
         <span style={{ color: COLORS.pinkText }}>velocity</span>
         <span>{frame.temporal.velocity.toFixed(2)}</span>
 
+        <span style={{ color: COLORS.pinkText }}>acceleration</span>
+        <span>{frame.temporal.acceleration.toFixed(2)}</span>
+
         <span style={{ color: COLORS.pinkText }}>drift_slope</span>
         <span>{frame.temporal.drift_slope.toFixed(2)}</span>
 
