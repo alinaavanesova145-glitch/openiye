@@ -265,3 +265,232 @@ identically.
    either a lightweight real-subprocess integration test or adopting an
    async-native WS test client, so the decoupling behavior has automated
    coverage instead of relying on a manual transcript in this report.
+
+---
+
+# 2026-07-05 — Follow-up sprint: performance headroom, calibration harness, e2e closure
+
+Four commits on `main`, each phase gated green, closing gaps #1, #2, #4 and
+recommended step #1 from the section above:
+
+```
+39e0087 perf: memoize canvas subtree with stable prop identities + render-count proof
+527b26d feat: telemetry capture mode + replay calibration harness with shared metrics core
+8ab0d54 test: hermetic end-to-end narrative delivery over real websocket
+4ab26b6 perf: vendor-split three/r3f + lazy viewport behind design-system fallback
+```
+
+**Precondition note**: this sprint's precondition ("git status clean, main in
+sync with origin/main") initially failed — the 7 commits from the section
+above were still local, unpushed. Stopped and asked before touching
+anything; pushed on explicit instruction, then proceeded.
+
+## Phase 1 — Canvas render headroom (closes gap #2)
+
+**Root cause found before any component wrapping**: every WS `frame` message
+legitimately carries a new `timestamp`/`temporal` payload, but
+`setPositions`/`setAnomalyIndices` handed out a fresh `Float32Array`/array
+identity on *every* message regardless of whether `coordinates`/
+`cluster_labels`/`anomaly_indices` actually changed. Wrapping components in
+`React.memo` first would have been a no-op — memo's shallow comparison
+would see a "different" prop every time. Fixed in `useVectorStream.ts`
+first (a `numberArrayEqual` reuse-on-equality check, cached via refs), *then*
+wrapped `InstancedCoreNodes`, `ClusterHulls`, `TracerLines`, `AnomalyBeacons`,
+`AnomalyBeacon` in `React.memo`, plus fixed the two remaining unstable
+props that would have defeated the wrap anyway: `VectorViewport`'s
+`tooltipInfo` (fresh object literal every render → `useMemo`'d on `liveFrame`
+identity) and each beacon's `[x,y,z]` position tuple (fresh array literal
+per beacon per render → memoized alongside the filtered anomaly list).
+
+`onPointerOver`/`onPointerOut` were deliberately left as plain inline
+closures per the phase's own instruction ("useCallback only where they
+currently break memoization") — they're attached to `AnomalyBeacon`'s own
+JSX, not passed to a further memoized child, so wrapping them would change
+nothing.
+
+**Proof, not claim** — two layers, with the jsdom/R3F boundary stated
+explicitly rather than glossed over:
+- `useVectorStream.test.ts` (+2 tests, 12 total): the hook reuses
+  `positions`/`anomalyIndices`/`liveFrame.cluster_labels` references across
+  two value-identical frames, and produces new references when values
+  actually change.
+- `VectorViewport.memo.test.tsx` (2 tests, new file): proves the
+  `React.memo` mechanism itself (skip on same references, re-render on new
+  ones) using a jsdom-safe DOM stand-in with the identical prop shapes
+  (`Float32Array` + parallel `number[]`). The real R3F components
+  (`<mesh>`, `<instancedMesh>`, ...) cannot mount under jsdom — no
+  `@react-three/test-renderer` is installed, judged out of scope for
+  proving this one property. Documented in both the test file and here.
+
+Manually verified against a live mock WS server: canvas renders identically
+(hulls, tracers, beacon), hover tooltip still works after the memoization.
+
+**Frontend suite**: 27 → 31 tests (4 new).
+
+## Phase 2 — Real-telemetry capture & replay harness (closes gap #3)
+
+- `backend/app/api/capture.py`: `IYE_CAPTURE_PATH` env var read once at
+  import time (zero file I/O when unset beyond a `None` check). Verified
+  manually: 3 POSTs with the env var set produced exactly 3 well-formed
+  JSONL lines matching the documented schema.
+- `backend/tools/replay_calibration.py`: replays a capture through
+  `TemporalEngine()` — imported from the same module `main.py` uses, no
+  copy-pasted constructor args — using recorded timestamps for `dt` (no
+  wall-clock sleep). Reports the same gate metrics as
+  `audit_temporal_noise.py` plus p50/p95/p99/max histograms per channel.
+- `backend/tools/calibration_metrics.py`: the metric-accounting core
+  (`CalibrationMetrics`) extracted out of `audit_temporal_noise.py` and
+  shared by both tools. **Verified the refactor was behavior-preserving**:
+  re-ran the audit before/after — byte-identical numbers (1.20% hot rate,
+  4 latch events, 0.75%/0.65%/0.00% per-channel exceedance, all three gates
+  still PASS).
+- Tests (`test_replay_calibration.py`, 4 new): a fixture built with the
+  audit's exact seed (42) and generation order reproduces its hot rate
+  *exactly* — `0.0120`, not just "within tolerance" — because it's the same
+  deterministic RNG sequence through the same engine. A fixture with an
+  injected spike is correctly detected (`latch_events >= 1`, a hot regime
+  in the final 6 frames). Missing/empty capture files fail cleanly with a
+  clear stderr message, not a traceback.
+- `docs/temporal_calibration.md` got the full recalibration runbook
+  (capture → replay → read histograms → adjust thresholds → re-run both
+  gates).
+
+**Backend suite**: 21 → 25 tests (4 new), `ruff check .` clean throughout.
+
+## Phase 3 — Hermetic end-to-end narrative test (closes gap #1)
+
+Took the preferred approach: a real `uvicorn` subprocess on an ephemeral
+port (found via a bind-to-0 socket probe), health-polled via `/api/health`
+(15s deadline), a real `websockets` client against the real `/stream`
+endpoint. `OLLAMA_API_URL` was made overridable via env var (defaulted to
+the real address — additive, non-breaking) and pointed at a tiny stdlib
+`http.server` stub on its own ephemeral port returning a canned completion
+— the test passes with **no Ollama installed**.
+
+This directly supersedes the TestClient attempt from the section above:
+same root cause identified there (TestClient tears down its event loop
+before the fire-and-forget `asyncio.create_task` narrative task ever gets
+scheduled) now has a real fix instead of a documented limitation — a real
+`uvicorn` process has one persistent event loop for its whole lifetime,
+matching production exactly.
+
+**Flake check**: ran 3 consecutive times, 3/3 passed, ~1.6–1.8s each.
+
+Marked `@pytest.mark.e2e` (registered in `pyproject.toml`), included in the
+default `pytest` run, skippable via `pytest -m "not e2e"`. Removed the old
+explanatory comment from `test_schema_compat.py`, replaced with a pointer
+to this test.
+
+**Backend suite**: 25 → 26 tests (1 new, but it's the one that mattered).
+
+## Phase 4 — Bundle split (closes gap #4)
+
+`vite.config.ts`: `manualChunks` isolates `three` + `@react-three/*` into a
+named `vendor-3d` chunk; `App.tsx`'s `VectorViewport` is now
+`React.lazy()`-loaded behind a `Suspense` boundary whose fallback follows
+the frozen design system exactly (pitch black, lowercase Courier New,
+`rgba(255,182,193,0.35)` — the same blush-pink-at-low-opacity value already
+used elsewhere in that file, no new color introduced).
+
+| | Before | After |
+|---|---|---|
+| Initial JS | 1,018.11 kB / 282.55 kB gzip (one bundle) | **18.51 kB / 6.16 kB gzip** (`index-*.js`) |
+| Lazy viewport chunk | — | 8.13 kB / 3.07 kB gzip (`VectorViewport-*.js`) |
+| Lazy vendor chunk | — | 993.33 kB / 275.19 kB gzip (`vendor-3d-*.js`) |
+| Build warnings | 1 (chunk size) | 0 |
+
+Initial bundle gate (**< 300 kB gzipped**): passed by a wide margin (6.16 kB).
+`chunkSizeWarningLimit` was raised specifically for `vendor-3d`, since its
+size is now deliberate and already isolated from the initial load path —
+not silencing a real problem, acknowledging a solved one.
+
+**Honest gap**: the manual check ("confirm the lazy boundary doesn't flash
+or break the 70/30 layout") was only partially achievable via automated
+browser capture. Live-preview screenshots confirmed the *final* rendered
+state is pixel-identical to before (hulls, tracers, beacons, hover tooltip,
+70/30 split all intact) and that `vendor-3d` is genuinely requested as a
+separate network resource. But the *transient* Suspense fallback frame
+itself resisted reliable automated capture: Vite emits a
+`<link rel="modulepreload">` hint for `vendor-3d` in `index.html`, causing
+the browser to start fetching it in parallel immediately, and repeated
+attempts to force-delay it (Playwright route interception with 1.2–3s
+artificial delays, CDP network throttling to 500kbps/200ms latency, 50ms-
+granularity polling) never caught the fallback text rendered — the real
+component appeared to mount before any delayed response should have
+resolved, which was not fully root-caused in the time available. Rather
+than ship an unreliable/flaky browser test or just assert "it probably
+works," `App.suspense.test.tsx` proves the underlying `React.lazy`/
+`Suspense` mechanism directly in jsdom with a manually-deferred dummy
+import — same "prove the mechanism, document the render boundary" pattern
+as `VectorViewport.memo.test.tsx` in Phase 1. The wiring in `App.tsx` is a
+textbook-correct, standard use of both APIs; what's unproven automatically
+is specifically the *timing interaction* with Vite's modulepreload
+optimization on a real network, not the React mechanism itself.
+
+**Frontend suite**: 31 → 32 tests (1 new).
+
+## Full verification, this sprint's final state
+
+| Check | Result |
+|---|---|
+| `pytest tests/` (backend, includes the new e2e test) | 26 passed |
+| `ruff check .` (backend) | All checks passed |
+| `tsc --noEmit` (frontend) | clean |
+| `eslint . --max-warnings 0` (frontend) | clean |
+| `vitest run` (frontend) | 32 passed |
+| `vite build` (frontend) | clean, 0 warnings |
+| Manual: live mock-WS canvas render + hover tooltip | confirmed identical |
+| Manual: production preview bundle load + layout | confirmed identical |
+
+## Files touched this sprint
+
+**Created**: `frontend/src/canvas/VectorViewport.memo.test.tsx`,
+`backend/app/api/capture.py`, `backend/tools/__init__.py`,
+`backend/tools/calibration_metrics.py`, `backend/tools/replay_calibration.py`,
+`backend/tests/test_replay_calibration.py`,
+`backend/tests/test_e2e_narrative.py`, `frontend/src/App.suspense.test.tsx`.
+
+**Modified**: `frontend/src/canvas/math/useVectorStream.ts` (+test file),
+`frontend/src/canvas/VectorViewport.tsx`, `backend/tests/audit_temporal_noise.py`
+(refactored onto the shared metrics core, verified behavior-preserving),
+`backend/app/api/main.py` (capture wiring + `OLLAMA_API_URL` env override),
+`backend/pyproject.toml` (`e2e` marker, `websockets` dev dependency),
+`backend/tests/test_schema_compat.py` (stale comment removed),
+`docs/temporal_calibration.md` (recalibration runbook),
+`frontend/vite.config.ts`, `frontend/src/App.tsx`.
+
+## Remaining known gaps (deliberately not touched, and why)
+
+1. **The Suspense fallback's interaction with Vite's modulepreload
+   optimization is unproven under real network timing** (see Phase 4 above)
+   — the mechanism is proven in isolation, the code is standard/correct by
+   inspection, but the specific browser-timing question wasn't fully
+   root-caused. Next step if revisited: try Playwright's
+   `context.route` at the `browserContext` level before any page exists, or
+   disable modulepreload via a Vite plugin option to test the "cold" path
+   directly.
+2. **`TemporalEngine` calibration is still synthetic.** The capture/replay
+   harness now exists specifically to close this the moment real telemetry
+   is available — see the runbook in `docs/temporal_calibration.md`. Until
+   then, the thresholds remain a documented estimate, not a measurement.
+3. **The e2e test only covers the anomaly/narrative path**, not e.g.
+   concurrent-narrative-storm behavior against the semaphore cap (Phase 1
+   of the earlier idealization pass unit-tested the semaphore's existence
+   and the cancellation lifecycle, but not an end-to-end multi-anomaly
+   burst). Judged out of scope for "closing gap #1" specifically, which was
+   about the single-narrative decoupling contract.
+4. **Bundle size**: `vendor-3d` itself (993 kB / 275 kB gzip) is unchanged
+   and un-shrunk — the gate was about the *initial* bundle, not this
+   library's absolute size. Further reduction would mean a different 3D
+   library or a lighter subset of three.js/drei, out of scope here.
+
+## Commits ready for review
+
+```
+39e0087 perf: memoize canvas subtree with stable prop identities + render-count proof
+527b26d feat: telemetry capture mode + replay calibration harness with shared metrics core
+8ab0d54 test: hermetic end-to-end narrative delivery over real websocket
+4ab26b6 perf: vendor-split three/r3f + lazy viewport behind design-system fallback
+```
+
+All local on `main`, not pushed, per instruction.
