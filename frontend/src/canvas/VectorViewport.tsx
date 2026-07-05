@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useMemo } from 'react';
 import type { MutableRefObject } from 'react';
 import * as THREE from 'three';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, Line } from '@react-three/drei';
+import { OrbitControls, Line, Html } from '@react-three/drei';
 import { ConvexGeometry } from 'three/examples/jsm/geometries/ConvexGeometry.js';
 import { useVectorStream, DEFAULT_TEMPORAL_METRICS, HOT_REGIMES } from './math/useVectorStream';
 import type { TemporalMetrics } from './math/useVectorStream';
@@ -228,15 +228,25 @@ function TracerLines({ positions, nominalIndices, clusterLabels }: TracerProps) 
 
 // ─── Pulsing Anomaly Beacons ───────────────────────────────────────────────────
 
-interface AnomalyBeaconProps {
-    position: [number, number, number];
-    temporalRef: MutableRefObject<TemporalMetrics>;
+/** Snapshot of frame-level (not per-point) data shown in a beacon's hover tooltip. */
+interface BeaconTooltipInfo {
+    temporal: TemporalMetrics;
+    explanation: string | null;
+    status: 'NOMINAL' | 'ANOMALY';
 }
 
-function AnomalyBeacon({ position, temporalRef }: AnomalyBeaconProps) {
+interface AnomalyBeaconProps {
+    position: [number, number, number];
+    anomalyIndex: number;
+    temporalRef: MutableRefObject<TemporalMetrics>;
+    tooltipInfo: BeaconTooltipInfo;
+}
+
+function AnomalyBeacon({ position, anomalyIndex, temporalRef, tooltipInfo }: AnomalyBeaconProps) {
     const meshRef = useRef<THREE.Mesh>(null);
     const materialRef = useRef<THREE.MeshBasicMaterial>(null);
     const phase = useRef(Math.random() * Math.PI * 2).current;
+    const [hovered, setHovered] = useState(false);
 
     useFrame(({ clock }) => {
         // Escalating anomalies (high velocity / composite_smoothed) pulse faster and
@@ -266,9 +276,41 @@ function AnomalyBeacon({ position, temporalRef }: AnomalyBeaconProps) {
 
     return (
         <group>
-            <mesh ref={meshRef} position={position}>
+            <mesh
+                ref={meshRef}
+                position={position}
+                onPointerOver={(e) => {
+                    e.stopPropagation();
+                    setHovered(true);
+                    document.body.style.cursor = 'pointer';
+                }}
+                onPointerOut={(e) => {
+                    e.stopPropagation();
+                    setHovered(false);
+                    document.body.style.cursor = 'auto';
+                }}
+            >
                 <icosahedronGeometry args={[1, 0]} />
                 <meshBasicMaterial ref={materialRef} color={COLORS.anomaly} transparent opacity={0.9} />
+                {hovered && (
+                    <Html position={[0, 1.8, 0]} center distanceFactor={9} style={{ pointerEvents: 'none' }}>
+                        <div className="beacon-tooltip">
+                            <div className="beacon-tooltip-header">
+                                <span>ANOMALY #{anomalyIndex}</span>
+                                <span className="regime-tag" style={{ color: HOT_REGIMES.has(tooltipInfo.temporal.regime) ? COLORS.anomaly : COLORS.pink }}>
+                                    {tooltipInfo.temporal.regime}
+                                </span>
+                            </div>
+                            <div className="beacon-tooltip-row"><span>status</span><span>{tooltipInfo.status}</span></div>
+                            <div className="beacon-tooltip-row"><span>velocity</span><span>{tooltipInfo.temporal.velocity.toFixed(2)}</span></div>
+                            <div className="beacon-tooltip-row"><span>composite_smoothed</span><span>{tooltipInfo.temporal.composite_smoothed.toFixed(2)}</span></div>
+                            <div className="beacon-tooltip-row"><span>z_max</span><span>{tooltipInfo.temporal.z_max.toFixed(2)}</span></div>
+                            {tooltipInfo.status === 'ANOMALY' && (
+                                <p className="beacon-tooltip-explanation">{tooltipInfo.explanation ?? 'analyzing…'}</p>
+                            )}
+                        </div>
+                    </Html>
+                )}
             </mesh>
             <Line
                 points={[
@@ -288,9 +330,10 @@ interface BeaconsProps {
     positions: Float32Array;
     anomalyIndices: number[];
     temporalRef: MutableRefObject<TemporalMetrics>;
+    tooltipInfo: BeaconTooltipInfo;
 }
 
-function AnomalyBeacons({ positions, anomalyIndices, temporalRef }: BeaconsProps) {
+function AnomalyBeacons({ positions, anomalyIndices, temporalRef, tooltipInfo }: BeaconsProps) {
     const pointCount = positions.length / 3;
     const validIndices = useMemo(
         () => anomalyIndices.filter((idx) => idx >= 0 && idx < pointCount),
@@ -303,7 +346,9 @@ function AnomalyBeacons({ positions, anomalyIndices, temporalRef }: BeaconsProps
                 <AnomalyBeacon
                     key={idx}
                     position={[positions[idx * 3], positions[idx * 3 + 1], positions[idx * 3 + 2]]}
+                    anomalyIndex={idx}
                     temporalRef={temporalRef}
+                    tooltipInfo={tooltipInfo}
                 />
             ))}
         </>
@@ -317,9 +362,10 @@ interface TacticalFieldProps {
     anomalyIndices: number[];
     clusterLabels: number[];
     temporalRef: MutableRefObject<TemporalMetrics>;
+    tooltipInfo: BeaconTooltipInfo;
 }
 
-function TacticalVectorField({ positions, anomalyIndices, clusterLabels, temporalRef }: TacticalFieldProps) {
+function TacticalVectorField({ positions, anomalyIndices, clusterLabels, temporalRef, tooltipInfo }: TacticalFieldProps) {
     const anomalySet = useMemo(() => new Set(anomalyIndices), [anomalyIndices]);
     const nominalIndices = useMemo(() => {
         const count = positions.length / 3;
@@ -337,7 +383,7 @@ function TacticalVectorField({ positions, anomalyIndices, clusterLabels, tempora
             <InstancedCoreNodes positions={positions} nominalIndices={nominalIndices} clusterLabels={clusterLabels} />
             <ClusterHulls positions={positions} clusterLabels={clusterLabels} />
             <TracerLines positions={positions} nominalIndices={nominalIndices} clusterLabels={clusterLabels} />
-            <AnomalyBeacons positions={positions} anomalyIndices={anomalyIndices} temporalRef={temporalRef} />
+            <AnomalyBeacons positions={positions} anomalyIndices={anomalyIndices} temporalRef={temporalRef} tooltipInfo={tooltipInfo} />
         </>
     );
 }
@@ -366,6 +412,11 @@ export default function VectorViewport() {
     const pointCount = activePositions.length / 3;
     const regime = liveFrame?.temporal.regime ?? DEFAULT_TEMPORAL_METRICS.regime;
     const regimeColor = HOT_REGIMES.has(regime) ? COLORS.anomaly : COLORS.pink;
+    const tooltipInfo: BeaconTooltipInfo = {
+        temporal: liveFrame?.temporal ?? DEFAULT_TEMPORAL_METRICS,
+        explanation: liveFrame?.explanation ?? null,
+        status: liveFrame?.status ?? 'NOMINAL',
+    };
 
     return (
         <div style={{ width: '100%', height: '100%', backgroundColor: '#000000', position: 'relative' }}>
@@ -387,6 +438,7 @@ export default function VectorViewport() {
                     anomalyIndices={activeAnomalyIndices}
                     clusterLabels={activeClusterLabels}
                     temporalRef={temporalRef}
+                    tooltipInfo={tooltipInfo}
                 />
                 <OrbitControls enableZoom={true} makeDefault />
             </Canvas>
