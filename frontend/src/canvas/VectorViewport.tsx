@@ -19,11 +19,21 @@ const COLORS = {
 const BOUNDS_HALF_EXTENT = 2; // matches ViewportWireframe's boxGeometry args [4, 4, 4]
 
 // Beacon pulse ranges — escalating anomalies pulse faster and harder, decaying ones settle.
-const BASE_PULSE_HZ = 1.0;
-const MAX_PULSE_HZ = 4.0;
-const VELOCITY_FREQ_SCALE = 0.6;
-const BASE_AMPLITUDE = 1.0;
-const COMPOSITE_AMP_SCALE = 0.5;
+export const BASE_PULSE_HZ = 1.0;
+export const MAX_PULSE_HZ = 4.0;
+export const VELOCITY_FREQ_SCALE = 0.6;
+export const BASE_AMPLITUDE = 1.0;
+export const COMPOSITE_AMP_SCALE = 0.5;
+
+/** Pulse frequency (Hz) escalates with velocity, clamped to [BASE_PULSE_HZ, MAX_PULSE_HZ]. */
+export function computeBeaconPulseFrequencyHz(velocity: number): number {
+    return Math.min(MAX_PULSE_HZ, Math.max(BASE_PULSE_HZ, BASE_PULSE_HZ + velocity * VELOCITY_FREQ_SCALE));
+}
+
+/** Pulse amplitude scales with composite_smoothed, floored at BASE_AMPLITUDE (no upper clamp). */
+export function computeBeaconPulseAmplitude(compositeSmoothed: number): number {
+    return Math.max(BASE_AMPLITUDE, BASE_AMPLITUDE + compositeSmoothed * COMPOSITE_AMP_SCALE);
+}
 
 // ─── Mock Seed Data (only used before a real frame arrives) ──────────────────
 
@@ -253,8 +263,8 @@ function AnomalyBeacon({ position, anomalyIndex, temporalRef, tooltipInfo }: Ano
         // harder; decaying ones settle back toward the base rate. Read from a ref
         // (not React state) so per-tick temporal updates never re-render the canvas.
         const temporal = temporalRef.current;
-        const freqHz = Math.min(MAX_PULSE_HZ, Math.max(BASE_PULSE_HZ, BASE_PULSE_HZ + temporal.velocity * VELOCITY_FREQ_SCALE));
-        const amplitude = Math.max(BASE_AMPLITUDE, BASE_AMPLITUDE + temporal.composite_smoothed * COMPOSITE_AMP_SCALE);
+        const freqHz = computeBeaconPulseFrequencyHz(temporal.velocity);
+        const amplitude = computeBeaconPulseAmplitude(temporal.composite_smoothed);
 
         const t = clock.getElapsedTime() * freqHz * (2 * Math.PI) + phase;
         const pulse = 1 + Math.sin(t) * 0.4 * amplitude;

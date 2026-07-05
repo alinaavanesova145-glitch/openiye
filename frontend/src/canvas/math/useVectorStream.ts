@@ -243,6 +243,12 @@ export function useVectorStream(): VectorStreamResult {
   // pulse animation so temporal ticks never trigger a canvas re-render.
   const temporalRef = useRef<TemporalMetrics>(DEFAULT_TEMPORAL_METRICS)
 
+  // Mirrors liveFrame synchronously. setState's functional-updater form is not
+  // guaranteed to run synchronously (React may defer it to the render phase),
+  // so deciding "does this narrative match the current frame" from inside a
+  // closure flag mutated by that updater is a race — this ref is the fix.
+  const liveFrameRef = useRef<VectorFrame | null>(null)
+
   // ── Connection logic ────────────────────────────────────────────────────
 
   const connect = useCallback(() => {
@@ -294,18 +300,16 @@ export function useVectorStream(): VectorStreamResult {
               const narrId = typeof msg.id === 'string' ? msg.id : null
               const narrText = typeof msg.explanation === 'string' ? msg.explanation : ''
 
-              let matchedCurrentFrame = false
-              setLiveFrame((prev) => {
-                if (prev && narrId !== null && prev.id === narrId) {
-                  matchedCurrentFrame = true
-                  return { ...prev, explanation: narrText }
-                }
-                return prev
-              })
+              const current = liveFrameRef.current
+              const matchedCurrentFrame = current !== null && narrId !== null && current.id === narrId
 
-              // A newer frame may have already replaced the one this narrative explains —
-              // never drop it silently, surface it in the terminal's history instead.
-              if (!matchedCurrentFrame) {
+              if (matchedCurrentFrame && current) {
+                const merged = { ...current, explanation: narrText }
+                liveFrameRef.current = merged
+                setLiveFrame(merged)
+              } else {
+                // A newer frame may have already replaced the one this narrative
+                // explains — never drop it silently, surface it in history instead.
                 setNarrativeHistory((prev) => [
                   ...prev.slice(-(NARRATIVE_HISTORY_LIMIT - 1)),
                   { id: narrId ?? 'unknown', explanation: narrText },
@@ -354,6 +358,7 @@ export function useVectorStream(): VectorStreamResult {
                 axis_mapping: null,
                 temporal,
               }
+              liveFrameRef.current = frame
               setLiveFrame(frame)
               return
             }
@@ -396,6 +401,7 @@ export function useVectorStream(): VectorStreamResult {
               axis_mapping: null,
               temporal: DEFAULT_TEMPORAL_METRICS,
             }
+            liveFrameRef.current = synthesizedFrame
             setLiveFrame(synthesizedFrame)
           }
         } catch {
