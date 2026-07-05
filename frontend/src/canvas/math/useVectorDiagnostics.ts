@@ -119,6 +119,6 @@ function isValidVectorFrame(data: unknown): data is VectorFrame {
     Array.isArray(obj.coordinates) &&
     Array.isArray(obj.cluster_labels) &&
     Array.isArray(obj.anomaly_indices) &&
-    typeof obj.explanation === 'string'
+    (obj.explanation === null || typeof obj.explanation === 'string')
   )
 }

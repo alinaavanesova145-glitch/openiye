@@ -17,6 +17,7 @@ import json
 import uuid
 import logging
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -76,6 +77,13 @@ async def generate_anomaly_explanation(metrics_summary: str) -> str:
 
 # ─── FastAPI Application ──────────────────────────────────────────────────────
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    yield
+    await _cancel_pending_narratives()
+
+
 app = FastAPI(
     title="IYE Anomaly Detection Engine",
     description=(
@@ -84,6 +92,7 @@ app = FastAPI(
         "and REST ingestion for the IYE canvas."
     ),
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -95,6 +104,9 @@ app.add_middleware(
 )
 
 # ─── StreamHub ────────────────────────────────────────────────────────────────
+
+BROADCAST_SEND_TIMEOUT = 2.0  # seconds — a slow/dead client can't stall the others
+
 
 class StreamHub:
     """Thread-safe broadcast hub for all active /stream WebSocket clients."""
@@ -116,22 +128,69 @@ class StreamHub:
             ]
         logger.info("WS client disconnected (active=%d)", len(self.active_connections))
 
+    async def _send_with_timeout(self, websocket: WebSocket, message: str) -> bool:
+        try:
+            await asyncio.wait_for(websocket.send_text(message), timeout=BROADCAST_SEND_TIMEOUT)
+            return True
+        except Exception:
+            return False
+
+    async def broadcast_text(self, message: str) -> None:
+        """Fan a pre-serialized message out to every client concurrently, each
+        with its own timeout, so one slow/dead socket can't stall the rest."""
+        async with self._lock:
+            connections = list(self.active_connections)
+        if not connections:
+            return
+        results = await asyncio.gather(*(self._send_with_timeout(ws, message) for ws in connections))
+        stale = {ws for ws, ok in zip(connections, results) if not ok}
+        if stale:
+            async with self._lock:
+                self.active_connections = [c for c in self.active_connections if c not in stale]
+            logger.info("WS dropped %d stale client(s) (active=%d)", len(stale), len(self.active_connections))
+
     async def broadcast(self, payload: VectorFramePayload) -> None:
         # Pydantic's model_dump_json returns a single-serialized string
-        message = payload.model_dump_json()
-        stale: List[WebSocket] = []
-        async with self._lock:
-            for ws in self.active_connections:
-                try:
-                    await ws.send_text(message)
-                except Exception:
-                    stale.append(ws)
-            for ws in stale:
-                self.active_connections = [c for c in self.active_connections if c is not ws]
+        await self.broadcast_text(payload.model_dump_json())
+
+    async def broadcast_narrative(self, frame_id: str, explanation: str) -> None:
+        """Broadcast the async LLaMA narrative as its own small message, keyed
+        by frame id, so the frontend can merge it into the frame it explains."""
+        await self.broadcast_text(json.dumps({"type": "narrative", "id": frame_id, "explanation": explanation}))
 
 
 hub = StreamHub()
 temporal_engine = TemporalEngine()
+
+# ─── Narrative task lifecycle (decoupled from the broadcast hot path) ───────
+
+NARRATIVE_CONCURRENCY_LIMIT = 4
+_narrate_semaphore = asyncio.Semaphore(NARRATIVE_CONCURRENCY_LIMIT)
+_pending_narrative_tasks: "set[asyncio.Task]" = set()
+
+
+async def _narrate(frame_id: str, metrics_summary: str) -> None:
+    """Generate the LLaMA narrative and broadcast it separately. Scheduled via
+    asyncio.create_task — never awaited on the ingestion/broadcast hot path."""
+    async with _narrate_semaphore:
+        text = await generate_anomaly_explanation(metrics_summary)
+    await hub.broadcast_narrative(frame_id, text)
+
+
+def _spawn_narrative_task(frame_id: str, metrics_summary: str) -> None:
+    task = asyncio.create_task(_narrate(frame_id, metrics_summary))
+    _pending_narrative_tasks.add(task)
+    task.add_done_callback(_pending_narrative_tasks.discard)
+
+
+async def _cancel_pending_narratives() -> None:
+    """Cancel and await any in-flight narrative tasks so shutdown never logs
+    'Task was destroyed but it is pending'. Called from the app's lifespan."""
+    tasks = list(_pending_narrative_tasks)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 # ─── Pydantic Schemas ─────────────────────────────────────────────────────────
 
@@ -185,9 +244,12 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
     labels            = iye.cluster(coords)
     anomaly_idx, expl = iye.detect_anomalies(coords)
 
+    # Decoupling gate: no await on the Ollama routine happens on this hot path.
+    # Anomaly frames broadcast with explanation=None immediately; the LLaMA
+    # narrative is generated by a fire-and-forget task and arrives later as
+    # its own {"type": "narrative", "id": ...} WS message.
     if anomaly_idx:
-        metrics_summary = str(data_2d[anomaly_idx[0]].tolist())
-        expl = await generate_anomaly_explanation(metrics_summary)
+        expl = None
     else:
         expl = "System nominal. All structural vectors within standard deviation thresholds."
 
@@ -222,6 +284,11 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
 
     # Broadcast cleanly to our explicit stream endpoint
     await hub.broadcast(payload)
+
+    if anomaly_idx:
+        metrics_summary = str(data_2d[anomaly_idx[0]].tolist())
+        _spawn_narrative_task(frame_id, metrics_summary)
+
     return payload
 
 # ─── WebSocket Stream ─────────────────────────────────────────────────────────

@@ -51,8 +51,9 @@ class VectorFramePayload(BaseModel):
     anomaly_indices: list[int] = Field(
         ..., description="Indices of points exceeding the 2.5σ threshold"
     )
-    explanation: str = Field(
-        ..., description="Plain-English explainability text"
+    explanation: Optional[str] = Field(
+        default=None,
+        description="Plain-English explainability text (null while an async narrative is pending)",
     )
     axis_mapping: Optional[Dict[str, int]] = Field(
         default=None,
