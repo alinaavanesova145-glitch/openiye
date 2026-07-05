@@ -33,20 +33,26 @@ function makeFrame(overrides: Partial<VectorFrame> = {}): VectorFrame {
 
 describe('DiagnosticSidebar', () => {
   it('renders window_fill, z_max, velocity, acceleration, and drift_slope with the expected formatting', () => {
-    render(<DiagnosticSidebar streamState="connected" activeFrame={makeFrame({
-      temporal: {
-        z_max: 1.8888,
-        z_per_dim: [],
-        velocity: 0.1234,
-        acceleration: -0.4567,
-        drift_slope: 2.71828,
-        composite: 0,
-        composite_smoothed: 0,
-        regime: 'stable',
-        window_fill: 0.75,
-        dominant_dim: -1,
-      },
-    })} isLive />)
+    render(
+      <DiagnosticSidebar
+        streamState="connected"
+        activeFrame={makeFrame({
+          temporal: {
+            z_max: 1.8888,
+            z_per_dim: [],
+            velocity: 0.1234,
+            acceleration: -0.4567,
+            drift_slope: 2.71828,
+            composite: 0,
+            composite_smoothed: 0,
+            regime: 'stable',
+            window_fill: 0.75,
+            dominant_dim: -1,
+          },
+        })}
+        isLive
+      />,
+    )
 
     expect(screen.getByText('75%')).toBeInTheDocument() // window_fill * 100, 0 decimals
     expect(screen.getByText('1.89')).toBeInTheDocument() // z_max, 2 decimals
@@ -67,7 +73,13 @@ describe('DiagnosticSidebar', () => {
   })
 
   it('renders no analysis block for a NOMINAL frame with a null explanation', () => {
-    render(<DiagnosticSidebar streamState="connected" activeFrame={makeFrame({ explanation: null })} isLive />)
+    render(
+      <DiagnosticSidebar
+        streamState="connected"
+        activeFrame={makeFrame({ explanation: null })}
+        isLive
+      />,
+    )
     expect(screen.queryByText('analyzing…')).not.toBeInTheDocument()
   })
 

@@ -74,6 +74,8 @@ describe('resolveExplanationDisplay', () => {
   })
 
   it('returns the real explanation once the narrative has arrived', () => {
-    expect(resolveExplanationDisplay('ANOMALY', 'structural drift on axis 2')).toBe('structural drift on axis 2')
+    expect(resolveExplanationDisplay('ANOMALY', 'structural drift on axis 2')).toBe(
+      'structural drift on axis 2',
+    )
   })
 })

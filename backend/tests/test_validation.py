@@ -1,6 +1,8 @@
-from app import CanvasMatrixResponse
 import pytest
 from pydantic import ValidationError
+
+from app import CanvasMatrixResponse
+
 
 def test_canvas_matrix_validation_valid():
     matrix = CanvasMatrixResponse(

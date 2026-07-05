@@ -1,13 +1,14 @@
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from typing import List, Literal, Dict, Optional
-import numpy as np
 import uuid
 from datetime import datetime, timezone
+from typing import List, Optional
 
 # Ensure iye is importable
 import iye
-from iye.server import VectorFramePayload, Coordinate3D as IYECoordinate3D
+import numpy as np
+from fastapi import APIRouter, HTTPException
+from iye.server import Coordinate3D as IYECoordinate3D
+from iye.server import VectorFramePayload
+from pydantic import BaseModel
 
 router = APIRouter()
 

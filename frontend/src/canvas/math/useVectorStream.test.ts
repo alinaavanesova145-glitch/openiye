@@ -53,13 +53,15 @@ class MockWebSocket {
   }
 }
 
-function makeFrameMessage(overrides: {
-  id?: string
-  velocity?: number
-  composite_smoothed?: number
-  explanation?: string | null
-  status?: 'NOMINAL' | 'ANOMALY'
-} = {}) {
+function makeFrameMessage(
+  overrides: {
+    id?: string
+    velocity?: number
+    composite_smoothed?: number
+    explanation?: string | null
+    status?: 'NOMINAL' | 'ANOMALY'
+  } = {},
+) {
   return {
     type: 'frame',
     id: overrides.id ?? 'frame-default',
@@ -178,7 +180,9 @@ describe('useVectorStream — narrative messages', () => {
     act(() => ws.triggerMessage({ type: 'narrative', id: 'f1', explanation: 'stale explanation' }))
 
     expect(result.current.liveFrame?.explanation).not.toBe('stale explanation')
-    expect(result.current.narrativeHistory).toEqual([{ id: 'f1', explanation: 'stale explanation' }])
+    expect(result.current.narrativeHistory).toEqual([
+      { id: 'f1', explanation: 'stale explanation' },
+    ])
   })
 
   it('surfaces a narrative that arrives before any frame (out-of-order delivery)', () => {

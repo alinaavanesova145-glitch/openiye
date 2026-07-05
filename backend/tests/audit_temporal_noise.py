@@ -28,8 +28,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.api.temporal_engine import (  # noqa: E402
     ACCELERATION_Z_THRESHOLD,
     DRIFT_Z_THRESHOLD,
-    TemporalEngine,
     VELOCITY_Z_THRESHOLD,
+    TemporalEngine,
 )
 
 N_POINTS = 16

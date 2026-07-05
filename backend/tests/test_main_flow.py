@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
+
 from app.api.main import app
-import numpy as np
 
 client = TestClient(app)
 
@@ -18,7 +18,7 @@ def test_main_vectors_nominal_6d():
     assert payload["status"] == "NOMINAL"
     assert payload["point_count"] == 16
     assert len(payload["coordinates"]) == 16
-    
+
     # Verify coordinates are 3D
     coord = payload["coordinates"][0]
     assert "x" in coord

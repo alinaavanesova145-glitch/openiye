@@ -249,9 +249,7 @@ const FrameMetadata: React.FC<{ frame: VectorFrame }> = ({ frame }) => {
         <span>{frame.temporal.drift_slope.toFixed(2)}</span>
 
         <span style={{ color: COLORS.pinkText }}>frame</span>
-        <span style={{ fontSize: 8, opacity: 0.6 }}>
-          {frame.frame_id.slice(0, 8)}
-        </span>
+        <span style={{ fontSize: 8, opacity: 0.6 }}>{frame.frame_id.slice(0, 8)}</span>
       </div>
     </div>
   )
@@ -344,20 +342,14 @@ export const DiagnosticSidebar: React.FC<DiagnosticSidebarProps> = ({
       </div>
 
       {/* ── Connectivity indicator ───────────────────────────────────── */}
-      <ConnectivityDot
-        streamState={streamState}
-        status={activeFrame?.status ?? null}
-      />
+      <ConnectivityDot streamState={streamState} status={activeFrame?.status ?? null} />
 
       {/* ── Active frame metadata ────────────────────────────────────── */}
       {activeFrame && <FrameMetadata frame={activeFrame} />}
 
       {/* ── Explainability text ──────────────────────────────────────── */}
       {activeFrame && (activeFrame.explanation !== null || activeFrame.status === 'ANOMALY') && (
-        <ExplanationBlock
-          title="analysis"
-          content={activeFrame.explanation ?? 'analyzing…'}
-        />
+        <ExplanationBlock title="analysis" content={activeFrame.explanation ?? 'analyzing…'} />
       )}
 
       {/* ── System notes ─────────────────────────────────────────────── */}

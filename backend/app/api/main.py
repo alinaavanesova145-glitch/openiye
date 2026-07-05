@@ -11,19 +11,19 @@ Launch commands (run from the project root with venv active):
   PYTHONPATH=./backend backend/.venv/bin/uvicorn app.api.main:app --host 127.0.0.1 --port 8050 --reload
 """
 
+import asyncio
+import json
+import logging
 import os
 import sys
-import json
 import uuid
-import logging
-import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import List, Optional
 
 import httpx
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -45,7 +45,9 @@ for _p in [_project_root, _backend_dir, os.path.join(_project_root, "sdk")]:
 
 import iye  # type: ignore # noqa: E402
 from iye.server import Coordinate3D, VectorFramePayload  # type: ignore # noqa: E402
+
 from app.api.temporal_engine import TemporalEngine  # noqa: E402
+
 # ─── Logger ───────────────────────────────────────────────────────────────────
 
 logging.basicConfig(level=logging.INFO)
@@ -314,7 +316,8 @@ async def stream_endpoint(websocket: WebSocket) -> None:
 # ─── Legacy Router Compatibility ──────────────────────────────────────────────
 
 try:
-    from app.api.routes import inference, canvas, health as route_health  # noqa: E402
+    from app.api.routes import canvas, inference  # noqa: E402
+    from app.api.routes import health as route_health
 
     app.include_router(route_health.router, prefix="/api/health",         tags=["System"])
     app.include_router(inference.router,    prefix="/api/inference",       tags=["Inference"])

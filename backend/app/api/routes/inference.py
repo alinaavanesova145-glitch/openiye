@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
+
 from app.deeptech.algorithms.core_algorithm import IYEModel
 
 router = APIRouter()
