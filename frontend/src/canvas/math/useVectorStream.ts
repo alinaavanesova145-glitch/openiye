@@ -233,6 +233,27 @@ function parseInboundPayload(data: unknown): { coordinates: number[]; anomalyInd
   return result
 }
 
+// ─── Referential stability ─────────────────────────────────────────────────────
+//
+// Every "frame" message legitimately carries a new timestamp/temporal payload,
+// but coordinates/cluster_labels/anomaly_indices are often byte-for-byte
+// identical to the previous frame (e.g. a nominal frame ingested from static
+// or slow-moving input). Without this check, setPositions/setAnomalyIndices
+// would hand out a fresh array identity every single message regardless of
+// whether the values changed, which makes React.memo on the canvas subtree a
+// no-op — memo's shallow prop comparison sees a "different" prop every time.
+// Reusing the previous reference when values are equal lets React's own
+// setState bailout (Object.is) — and downstream memo — actually take effect.
+
+function numberArrayEqual(a: ArrayLike<number> | null, b: ArrayLike<number>): boolean {
+  if (a === null) return false
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 const NARRATIVE_HISTORY_LIMIT = 20
@@ -261,6 +282,12 @@ export function useVectorStream(): VectorStreamResult {
   // so deciding "does this narrative match the current frame" from inside a
   // closure flag mutated by that updater is a race — this ref is the fix.
   const liveFrameRef = useRef<VectorFrame | null>(null)
+
+  // Referential-stability caches — see the comment above numberArrayEqual.
+  const lastRawCoordsRef = useRef<number[] | null>(null)
+  const lastPositionsRef = useRef<Float32Array>(new Float32Array(0))
+  const lastClusterLabelsRef = useRef<number[]>([])
+  const lastAnomalyIndicesRef = useRef<number[]>([])
 
   // ── Connection logic ────────────────────────────────────────────────────
 
@@ -341,9 +368,38 @@ export function useVectorStream(): VectorStreamResult {
               const { coordinates, anomalyIndices: parsedAnomalies } = parseInboundPayload(msg)
               if (coordinates.length === 0) return
 
-              const posArray = new Float32Array(coordinates)
+              // Reuse the previous array/typed-array identity when the values are
+              // unchanged, so React's setState bailout (and memo, downstream) can
+              // actually skip work instead of seeing a "new" prop every message.
+              const coordsChanged = !numberArrayEqual(lastRawCoordsRef.current, coordinates)
+              const posArray = coordsChanged ? new Float32Array(coordinates) : lastPositionsRef.current
+              if (coordsChanged) {
+                lastRawCoordsRef.current = coordinates
+                lastPositionsRef.current = posArray
+              }
               setPositions(posArray)
-              setAnomalyIndices(parsedAnomalies)
+
+              const rawClusterLabels = Array.isArray(msg.cluster_labels)
+                ? (msg.cluster_labels as number[])
+                : []
+              const clusterLabelsChanged = !numberArrayEqual(
+                lastClusterLabelsRef.current,
+                rawClusterLabels,
+              )
+              const clusterLabels = clusterLabelsChanged
+                ? rawClusterLabels
+                : lastClusterLabelsRef.current
+              if (clusterLabelsChanged) lastClusterLabelsRef.current = clusterLabels
+
+              const anomalyIndicesChanged = !numberArrayEqual(
+                lastAnomalyIndicesRef.current,
+                parsedAnomalies,
+              )
+              const anomalyIndicesStable = anomalyIndicesChanged
+                ? parsedAnomalies
+                : lastAnomalyIndicesRef.current
+              if (anomalyIndicesChanged) lastAnomalyIndicesRef.current = anomalyIndicesStable
+              setAnomalyIndices(anomalyIndicesStable)
 
               const coordsObjects: VectorCoordinate3D[] = []
               for (let i = 0; i < coordinates.length / 3; i++) {
@@ -372,10 +428,8 @@ export function useVectorStream(): VectorStreamResult {
                 status,
                 point_count: coordsObjects.length,
                 coordinates: coordsObjects,
-                cluster_labels: Array.isArray(msg.cluster_labels)
-                  ? (msg.cluster_labels as number[])
-                  : [],
-                anomaly_indices: parsedAnomalies,
+                cluster_labels: clusterLabels,
+                anomaly_indices: anomalyIndicesStable,
                 explanation,
                 axis_mapping: null,
                 temporal,

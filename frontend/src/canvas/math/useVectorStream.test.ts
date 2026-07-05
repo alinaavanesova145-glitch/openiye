@@ -60,6 +60,9 @@ function makeFrameMessage(
     composite_smoothed?: number
     explanation?: string | null
     status?: 'NOMINAL' | 'ANOMALY'
+    coordinates?: { x: number; y: number; z: number }[]
+    cluster_labels?: number[]
+    anomaly_indices?: number[]
   } = {},
 ) {
   return {
@@ -67,9 +70,9 @@ function makeFrameMessage(
     id: overrides.id ?? 'frame-default',
     status: overrides.status ?? 'NOMINAL',
     timestamp: new Date().toISOString(),
-    coordinates: [{ x: 1, y: 2, z: 3 }],
-    cluster_labels: [0],
-    anomaly_indices: [],
+    coordinates: overrides.coordinates ?? [{ x: 1, y: 2, z: 3 }],
+    cluster_labels: overrides.cluster_labels ?? [0],
+    anomaly_indices: overrides.anomaly_indices ?? [],
     explanation: overrides.explanation ?? null,
     temporal: {
       z_max: 0,
@@ -153,6 +156,77 @@ describe('useVectorStream — frame messages', () => {
     act(() => ws.triggerOpen())
     act(() => ws.triggerMessage({ type: 'frame', id: 'empty', coordinates: [] }))
     expect(result.current.liveFrame).toBeNull()
+  })
+})
+
+describe('useVectorStream — referential stability (React.memo prerequisite)', () => {
+  // Every frame legitimately carries a new timestamp/temporal payload, but
+  // coordinates/cluster_labels/anomaly_indices are frequently identical to the
+  // previous frame. React.memo on the canvas subtree is a no-op unless these
+  // specific arrays keep the same identity when their *values* are unchanged
+  // — this is what the hook must guarantee for memoization to do anything.
+
+  const coords = [
+    { x: 1, y: 2, z: 3 },
+    { x: 4, y: 5, z: 6 },
+  ]
+
+  it('reuses the same positions/cluster_labels/anomaly_indices identity across two value-identical frames', () => {
+    const { result } = renderHook(() => useVectorStream())
+    const ws = MockWebSocket.instances[0]
+    act(() => ws.triggerOpen())
+
+    act(() => {
+      ws.triggerMessage(
+        makeFrameMessage({ id: 'f1', coordinates: coords, cluster_labels: [0, 1], anomaly_indices: [1] }),
+      )
+    })
+    const positionsAfterFirst = result.current.positions
+    const anomalyIndicesAfterFirst = result.current.anomalyIndices
+    const clusterLabelsAfterFirst = result.current.liveFrame?.cluster_labels
+
+    act(() => {
+      // Same spatial data, different id/timestamp — a legitimate "repeat" frame.
+      ws.triggerMessage(
+        makeFrameMessage({ id: 'f2', coordinates: coords, cluster_labels: [0, 1], anomaly_indices: [1] }),
+      )
+    })
+
+    expect(result.current.liveFrame?.id).toBe('f2') // the frame itself did update
+    expect(result.current.positions).toBe(positionsAfterFirst) // same Float32Array identity
+    expect(result.current.anomalyIndices).toBe(anomalyIndicesAfterFirst)
+    expect(result.current.liveFrame?.cluster_labels).toBe(clusterLabelsAfterFirst)
+  })
+
+  it('produces a new positions/cluster_labels/anomaly_indices identity when the values actually change', () => {
+    const { result } = renderHook(() => useVectorStream())
+    const ws = MockWebSocket.instances[0]
+    act(() => ws.triggerOpen())
+
+    act(() => {
+      ws.triggerMessage(
+        makeFrameMessage({ id: 'f1', coordinates: coords, cluster_labels: [0, 1], anomaly_indices: [1] }),
+      )
+    })
+    const positionsAfterFirst = result.current.positions
+    const anomalyIndicesAfterFirst = result.current.anomalyIndices
+    const clusterLabelsAfterFirst = result.current.liveFrame?.cluster_labels
+
+    act(() => {
+      ws.triggerMessage(
+        makeFrameMessage({
+          id: 'f2',
+          coordinates: [{ x: 9, y: 9, z: 9 }, ...coords],
+          cluster_labels: [2, 0, 1],
+          anomaly_indices: [0],
+        }),
+      )
+    })
+
+    expect(result.current.positions).not.toBe(positionsAfterFirst)
+    expect(result.current.anomalyIndices).not.toBe(anomalyIndicesAfterFirst)
+    expect(result.current.liveFrame?.cluster_labels).not.toBe(clusterLabelsAfterFirst)
+    expect(result.current.positions.length).toBe(9) // 3 points * 3
   })
 })
 

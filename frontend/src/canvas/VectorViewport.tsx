@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from 'react'
+import { memo, useEffect, useRef, useState, useMemo } from 'react'
 import type { MutableRefObject } from 'react'
 import * as THREE from 'three'
 import { Canvas, useFrame } from '@react-three/fiber'
@@ -17,6 +17,8 @@ const COLORS = {
 } as const
 
 const BOUNDS_HALF_EXTENT = 2 // matches ViewportWireframe's boxGeometry args [4, 4, 4]
+
+const EMPTY_NUMBER_ARRAY: number[] = []
 
 // Beacon pulse ranges — escalating anomalies pulse faster and harder, decaying ones settle.
 export const BASE_PULSE_HZ = 1.0
@@ -65,7 +67,11 @@ interface CoreNodesProps {
   clusterLabels: number[]
 }
 
-function InstancedCoreNodes({ positions, nominalIndices, clusterLabels }: CoreNodesProps) {
+const InstancedCoreNodes = memo(function InstancedCoreNodes({
+  positions,
+  nominalIndices,
+  clusterLabels,
+}: CoreNodesProps) {
   const meshRef = useRef<THREE.InstancedMesh>(null)
   const count = nominalIndices.length || 1
 
@@ -103,7 +109,7 @@ function InstancedCoreNodes({ positions, nominalIndices, clusterLabels }: CoreNo
       <meshBasicMaterial transparent opacity={0.55} vertexColors depthWrite={false} />
     </instancedMesh>
   )
-}
+})
 
 // ─── Dynamic Volumetric Cluster Hulls ─────────────────────────────────────────
 
@@ -119,7 +125,7 @@ interface HullEntry {
   color: string
 }
 
-function ClusterHulls({ positions, clusterLabels }: HullsProps) {
+const ClusterHulls = memo(function ClusterHulls({ positions, clusterLabels }: HullsProps) {
   const hulls = useMemo<HullEntry[]>(() => {
     const groups = new Map<number, THREE.Vector3[]>()
     for (let i = 0; i < clusterLabels.length; i++) {
@@ -179,7 +185,7 @@ function ClusterHulls({ positions, clusterLabels }: HullsProps) {
       ))}
     </>
   )
-}
+})
 
 // ─── Vector Tracer Lines (network web) ────────────────────────────────────────
 
@@ -189,7 +195,11 @@ interface TracerProps {
   clusterLabels: number[]
 }
 
-function TracerLines({ positions, nominalIndices, clusterLabels }: TracerProps) {
+const TracerLines = memo(function TracerLines({
+  positions,
+  nominalIndices,
+  clusterLabels,
+}: TracerProps) {
   const geometryRef = useRef<THREE.BufferGeometry>(null)
 
   const segmentPositions = useMemo(() => {
@@ -242,7 +252,7 @@ function TracerLines({ positions, nominalIndices, clusterLabels }: TracerProps) 
       <lineBasicMaterial color={COLORS.tracer} transparent opacity={0.12} />
     </lineSegments>
   )
-}
+})
 
 // ─── Pulsing Anomaly Beacons ───────────────────────────────────────────────────
 
@@ -263,13 +273,18 @@ export function resolveExplanationDisplay(
 }
 
 interface AnomalyBeaconProps {
-  position: [number, number, number]
+  position: readonly [number, number, number]
   anomalyIndex: number
   temporalRef: MutableRefObject<TemporalMetrics>
   tooltipInfo: BeaconTooltipInfo
 }
 
-function AnomalyBeacon({ position, anomalyIndex, temporalRef, tooltipInfo }: AnomalyBeaconProps) {
+const AnomalyBeacon = memo(function AnomalyBeacon({
+  position,
+  anomalyIndex,
+  temporalRef,
+  tooltipInfo,
+}: AnomalyBeaconProps) {
   const meshRef = useRef<THREE.Mesh>(null)
   const materialRef = useRef<THREE.MeshBasicMaterial>(null)
   const phase = useRef(Math.random() * Math.PI * 2).current
@@ -375,7 +390,7 @@ function AnomalyBeacon({ position, anomalyIndex, temporalRef, tooltipInfo }: Ano
       />
     </group>
   )
-}
+})
 
 interface BeaconsProps {
   positions: Float32Array
@@ -384,19 +399,39 @@ interface BeaconsProps {
   tooltipInfo: BeaconTooltipInfo
 }
 
-function AnomalyBeacons({ positions, anomalyIndices, temporalRef, tooltipInfo }: BeaconsProps) {
+const AnomalyBeacons = memo(function AnomalyBeacons({
+  positions,
+  anomalyIndices,
+  temporalRef,
+  tooltipInfo,
+}: BeaconsProps) {
   const pointCount = positions.length / 3
   const validIndices = useMemo(
     () => anomalyIndices.filter((idx) => idx >= 0 && idx < pointCount),
     [anomalyIndices, pointCount],
   )
 
+  // Stable per-beacon position tuples — without this, AnomalyBeacon would get
+  // a brand-new [x,y,z] array literal identity every render regardless of
+  // whether positions/validIndices actually changed, defeating its memo.
+  const beaconPositions = useMemo(
+    () =>
+      validIndices.map(
+        (idx): [number, number, number] => [
+          positions[idx * 3],
+          positions[idx * 3 + 1],
+          positions[idx * 3 + 2],
+        ],
+      ),
+    [positions, validIndices],
+  )
+
   return (
     <>
-      {validIndices.map((idx) => (
+      {validIndices.map((idx, i) => (
         <AnomalyBeacon
           key={idx}
-          position={[positions[idx * 3], positions[idx * 3 + 1], positions[idx * 3 + 2]]}
+          position={beaconPositions[i]}
           anomalyIndex={idx}
           temporalRef={temporalRef}
           tooltipInfo={tooltipInfo}
@@ -404,7 +439,7 @@ function AnomalyBeacons({ positions, anomalyIndices, temporalRef, tooltipInfo }:
       ))}
     </>
   )
-}
+})
 
 // ─── Composed Tactical Field ───────────────────────────────────────────────────
 
@@ -416,7 +451,7 @@ interface TacticalFieldProps {
   tooltipInfo: BeaconTooltipInfo
 }
 
-function TacticalVectorField({
+const TacticalVectorField = memo(function TacticalVectorField({
   positions,
   anomalyIndices,
   clusterLabels,
@@ -456,7 +491,7 @@ function TacticalVectorField({
       />
     </>
   )
-}
+})
 
 // Bounding box wireframe for spatial reference
 function ViewportWireframe() {
@@ -479,17 +514,24 @@ export default function VectorViewport() {
   const activePositions = hasLiveData ? positions : mockFrame.positions
   const activeAnomalyIndices = hasLiveData ? anomalyIndices : mockFrame.anomalyIndices
   const activeClusterLabels = hasLiveData
-    ? (liveFrame?.cluster_labels ?? [])
+    ? (liveFrame?.cluster_labels ?? EMPTY_NUMBER_ARRAY)
     : mockFrame.clusterLabels
 
   const pointCount = activePositions.length / 3
   const regime = liveFrame?.temporal.regime ?? DEFAULT_TEMPORAL_METRICS.regime
   const regimeColor = HOT_REGIMES.has(regime) ? COLORS.anomaly : COLORS.pink
-  const tooltipInfo: BeaconTooltipInfo = {
-    temporal: liveFrame?.temporal ?? DEFAULT_TEMPORAL_METRICS,
-    explanation: liveFrame?.explanation ?? null,
-    status: liveFrame?.status ?? 'NOMINAL',
-  }
+
+  // Keyed on liveFrame's identity (which only changes when a new frame message
+  // or a matching narrative arrives) so AnomalyBeacon's memo isn't defeated by
+  // a fresh tooltipInfo object on every unrelated VectorViewport render.
+  const tooltipInfo = useMemo<BeaconTooltipInfo>(
+    () => ({
+      temporal: liveFrame?.temporal ?? DEFAULT_TEMPORAL_METRICS,
+      explanation: liveFrame?.explanation ?? null,
+      status: liveFrame?.status ?? 'NOMINAL',
+    }),
+    [liveFrame],
+  )
 
   return (
     <div
