@@ -1,7 +1,11 @@
-import React, { useState, useCallback, useRef } from 'react'
-import VectorViewport from '@canvas/VectorViewport'
+import React, { Suspense, lazy, useState, useCallback, useRef } from 'react'
 import { useVectorDiagnostics } from '@canvas/math/useVectorDiagnostics'
 import { DiagnosticSidebar } from '@/ui/DiagnosticSidebar'
+
+// Lazy-loaded so the shell (sidebar, terminal panel, layout) paints before
+// the three.js/@react-three 3D engine — the vast majority of the bundle —
+// finishes downloading. See vite.config.ts's manualChunks for the vendor split.
+const VectorViewport = lazy(() => import('@canvas/VectorViewport'))
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -184,6 +188,31 @@ const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileData }) => {
 
 // ─── Viewport Panel ───────────────────────────────────────────────────────────
 
+const ViewportFallback: React.FC = () => (
+  <div
+    style={{
+      position: 'absolute',
+      inset: 0,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      background: COLORS.black,
+    }}
+  >
+    <span
+      style={{
+        fontFamily: "'Courier New', Courier, monospace",
+        fontSize: 11,
+        letterSpacing: '0.2em',
+        textTransform: 'lowercase',
+        color: 'rgba(255, 182, 193, 0.35)',
+      }}
+    >
+      initializing viewport…
+    </span>
+  </div>
+)
+
 const ViewportPanel: React.FC = () => (
   <div
     style={{
@@ -194,7 +223,9 @@ const ViewportPanel: React.FC = () => (
       background: COLORS.black,
     }}
   >
-    <VectorViewport />
+    <Suspense fallback={<ViewportFallback />}>
+      <VectorViewport />
+    </Suspense>
 
     {/* Minimal top-left label */}
     <div
