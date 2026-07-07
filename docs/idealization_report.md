@@ -494,3 +494,186 @@ optimization on a real network, not the React mechanism itself.
 ```
 
 All local on `main`, not pushed, per instruction.
+
+---
+
+# 2026-07-07 — Sprint: upload-to-insight (file pipeline, error states, narrative surfacing)
+
+## Phase 0 — Upload path trace (as found, before this sprint)
+
+**The reported bug**: dropping `package.json` into the DATA SOURCE panel produced
+no visible reaction — no error, no state change, the previously-rendered scene
+stayed exactly as it was.
+
+**What the code actually did, traced end to end:**
+
+1. `FileDropZone` (`frontend/src/App.tsx`) never inspected the file's
+   extension or content at all. `processFile` read *any* dropped file with
+   `FileReader.readAsArrayBuffer`, then did:
+   ```ts
+   onFileData(new Float32Array(buffer))
+   ```
+   This reinterprets the file's raw bytes as IEEE-754 32-bit floats,
+   unconditionally — regardless of whether the file was `.csv`, `.json`,
+   `.npy`, or `.bin`. There was, and is (before this sprint), **no CSV
+   parser, no JSON parser, and no NPY parser anywhere in the frontend**
+   (verified by grep — the only `JSON.parse` calls in the whole `canvas/`
+   tree are for WebSocket *message* framing in `useVectorStream.ts`, unrelated
+   to file content). The `accept=".json,.csv,.npy,.bin"` on the file input
+   and the "json · csv · npy · bin" label text were UI copy with nothing
+   behind them.
+2. `new Float32Array(buffer)` **throws a synchronous `RangeError`** if the
+   source `ArrayBuffer`'s byte length is not a multiple of 4 — and it throws
+   *inside* `FileReader.onload`, a callback with no surrounding `try`/`catch`
+   anywhere in the call chain. An uncaught exception thrown inside a
+   `FileReader` event handler is reported to the browser console and
+   otherwise swallowed — `onFileData` (and therefore `processVectors`) is
+   never invoked. This is almost certainly exactly what happened with
+   `package.json`: nothing ran, nothing changed, because the crash happened
+   before any application code got a chance to react.
+3. Even in the (less common) case where a dropped text file's byte length
+   happens to be a multiple of 4, the result is not "no numeric data" — it's
+   *garbage* numeric data (ASCII bytes bit-reinterpreted as floats, mostly
+   large magnitudes, subnormals, or `NaN`). That garbage was then handed to
+   `processVectors`, which POSTs it to `/api/canvas/vectors` with **no
+   `dim` field at all** — silently relying on the backend's `dim=6` default.
+   If the garbage float count isn't divisible by 6, the backend correctly
+   responds `400`. But `processVectors`'s catch block only does
+   `console.error(...)`; `isProcessing` is reset and nothing else changes —
+   this is the second, independent way to reach "no error, no state change."
+4. There is no `rejected`/`error`/`partial` UI state anywhere in this path.
+   `FileDropZone` only ever tracked `droppedFile` (name/size for display) and
+   `isDragging` — cosmetic state, not pipeline state. `useVectorDiagnostics`
+   does track `isProcessing`, but nothing renders it.
+
+**Does uploaded data reach the backend pipeline (UMAP → HDBSCAN → Z-score →
+`TemporalEngine` → narrative) at all, when it does succeed?** Yes — and this
+was the one genuinely correct part of the existing design. `processVectors`
+already POSTs to the same `/api/canvas/vectors` route the SDK/live stream
+uses; `ingest_and_broadcast` runs the identical pipeline regardless of
+caller and ends with `await hub.broadcast(payload)`, fanning the resulting
+frame out to *every* connected `/stream` client. Because the frontend
+already holds an open `/stream` WebSocket connection at all times (opened
+unconditionally on mount, independent of any upload), a successful REST
+upload's resulting frame arrives back at the very same browser tab as a
+normal WS `frame` message — carrying the real `TemporalEngine` output and,
+if `status: "ANOMALY"`, followed by an async `narrative` message exactly
+like any other anomaly. `useVectorDiagnostics`'s own `restFrame` state (built
+from the raw REST response, with `temporal` overwritten by
+`DEFAULT_TEMPORAL_METRICS`) is effectively shadowed the moment that WS frame
+lands, because `isLive = liveFrame !== null && streamState === 'connected'`
+flips true and `activeFrame = isLive ? liveFrame : restFrame` prefers it.
+**Conclusion**: the "uploaded datasets never produce narratives" symptom in
+the bug report is very likely a *downstream consequence* of finding #1-#3
+above, not a separate narrative-routing bug — no upload has ever actually
+delivered valid numeric data to the backend to exercise that path. This
+sprint's Phase 3 gate re-verifies this conclusion live rather than assuming
+it.
+
+**One more thing found while tracing, noted but not fixed this sprint**
+(out of scope — not the reported bug, not blocking it): `VectorViewport.tsx`
+calls `useVectorStream()` directly and independently from
+`useVectorDiagnostics` (which also calls `useVectorStream()` internally for
+the sidebar) — two separate WebSocket connections to `/stream` per page
+load, each with its own reconnect/backoff state. Both receive the same
+server-side broadcasts, so this doesn't currently cause incorrect behavior,
+just an unnecessary duplicate connection. Flagged as a future cleanup, not
+touched here per "no rewrites of working code."
+
+## Phase 1 — Real parsers + full pipeline routing
+
+New file `frontend/src/canvas/upload/parseMatrix.ts` — dependency-free,
+pure-function parsers, each returning a `ParseOutcome` (`{kind:'ok', matrix}`
+or `{kind:'rejected', reason}`):
+- `parseCsvMatrix` — splits lines/commas, detects an optional non-numeric
+  header row, keeps only columns that are numeric across *every* row
+  (drops the rest), drops malformed/ragged rows, reports exact
+  `droppedColumns`/`droppedRows` counts. Chunked: yields to the event loop
+  every 2000 rows via a `setTimeout(0)` boundary so a large CSV cannot
+  freeze the UI thread.
+- `parseJsonMatrix` — accepts an array of arrays or an array of flat numeric
+  objects; for objects, keeps only keys numeric across every row (same
+  column-drop semantics as CSV). A bare object (exactly what `package.json`
+  is) fails the `Array.isArray` check immediately and is `rejected`.
+- `parseNpyMatrix` — hand-rolled `.npy` header parser (magic bytes, version,
+  header dict regex for `descr`/`fortran_order`/`shape`), supporting the
+  common little-endian numeric dtypes (`f8`,`f4`,`i8`,`i4`,`i2`,`i1`,`u8`,
+  `u4`,`u2`,`u1`). Rejects Fortran-order arrays and non-2D shapes explicitly
+  rather than mis-parsing them.
+- `parseFile(file)` dispatches on extension; anything else (including now
+  `.bin`, see below) is `rejected: "unsupported file type"`.
+
+**`.bin` dropped from the accepted list.** There was never a defined `.bin`
+schema anywhere in the codebase — it was raw-bytes-as-float32 by accident,
+which is exactly bug #1 above. Removed from `accept=` and the UI copy in
+`App.tsx` rather than keep advertising a format with no real parser behind
+it.
+
+**Chunked, not a Web Worker.** The brief allowed either. A dedicated Worker
+would need Vite's worker-bundling path exercised in a real browser to trust
+(this sprint already has three other browser-verified surfaces), and the
+pure parse functions need to stay directly unit-testable without a Worker
+message-passing shim. Chunked `setTimeout(0)` yielding satisfies "the UI
+thread never freezes" for the realistic file sizes this app targets (the
+25 MB cap below), stays fully synchronous-per-chunk and testable, and is
+called out here as a deliberate scope choice, not an oversight.
+
+**Size cap**: `MAX_UPLOAD_BYTES = 25 MB`, checked against `File.size` before
+any read/parse begins — produces an immediate `rejected`-flavored state with
+an explicit "file exceeds 25mb limit" message (Phase 2).
+
+**Wiring**: `useVectorDiagnostics.processVectors` now takes the parsed
+`rows: number[][]` matrix directly and POSTs `{ matrix: rows }` — using
+`MatrixUploadRequest.matrix`, the 2D path the schema already supported but
+the frontend never used, instead of hand-flattening into `data`/`dim` (which
+is how the missing-`dim` bug above happened in the first place). No backend
+route or detection code changed; this is the same `ingest_and_broadcast`
+batch path every other caller uses.
+
+## Phase 2 — Honest data-source states
+
+`DataSourceState` (new, `frontend/src/ui/dataSourceState.ts`) is a tagged
+union: `idle | parsing | rejected | partial | loaded | error`, owned by
+`useVectorDiagnostics` and threaded down as a prop — `FileDropZone` is now
+purely presentational for this state, rendering each variant. All new text
+is blush-tier (`rgba(255,182,193,*)`), lowercase, hairline borders — no
+magenta anywhere in this component (magenta stays reserved for
+`status: "ANOMALY"` elsewhere). `rejected` renders its message at ~70%
+blush per spec (`rgba(255,182,193,0.7)`).
+
+## Phase 3 — Narrative surfacing + `llm` status indicator
+
+Confirmed live (see gate below) that Phase 0's conclusion held: once real
+data reaches the backend, uploaded-anomaly narratives arrive over the
+existing WS `narrative` message exactly like streamed ones — no narrative
+routing changes were needed.
+
+`llm` status indicator: added next to the existing `stream` dot in
+`DiagnosticSidebar`. Backend tracks a module-level `_llm_status`
+(`"unknown"|"ready"|"offline"`), set once at startup via a single cheap
+`GET {ollama_base}/api/tags` inside the `lifespan` startup hook, and
+thereafter updated for free from the *real* outcome of every
+`generate_anomaly_explanation` call (success → `ready`, exception → `offline`)
+— zero additional pings, never probed per-frame, exactly as instructed.
+Exposed additively on `/api/health` as `"llm"`. Frontend fetches
+`/api/health` once on mount.
+
+## Phase 4 — Demo fixture
+
+`demo/sample_telemetry.csv`: 200 rows × 6 numeric dims, seeded
+(`random.seed(1729)`), 4 planted outlier rows, generated by
+`tools/make_demo_fixture.py` (stdlib-only, no numpy dependency, reproducible
+via `python3 tools/make_demo_fixture.py`).
+
+## Gate results
+
+| Gate | Result |
+|---|---|
+| Phase 1 — valid numeric CSV rebuilds scene with new points/clusters | see manual verification below |
+| Phase 1 — outlier rows produce anomaly beacons | see manual verification below |
+| Phase 2 — `package.json`-shaped input → `rejected` | pytest/vitest, see Files touched |
+| Phase 2 — mixed CSV → `partial` with correct counts | pytest/vitest, see Files touched |
+| Phase 3 — backend test: batch upload with outlier → anomaly frame → narrative | automated, `test_e2e_upload_narrative.py` |
+| Phase 3 — manual: drop CSV → beacons → `analyzing…` → narrative in tooltip + terminal | see manual verification below |
+
+(Filled in below as each phase completes verification.)
