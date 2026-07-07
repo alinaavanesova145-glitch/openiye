@@ -199,7 +199,10 @@ async def _cancel_pending_narratives() -> None:
 
 class MatrixUploadRequest(BaseModel):
     """Flat-float or nested-float matrix payload for ingestion."""
-    data: List[float]
+    # Optional (not required) so a `matrix`-only request validates — the two
+    # input modes are alternatives, per the docstring, not both-required.
+    # Additive/backward-compatible: existing callers already send `data`.
+    data: Optional[List[float]] = None
     dim: Optional[int] = 6          # feature dimension, default 6D metrics matrix
     matrix: Optional[List[List[float]]] = None
 

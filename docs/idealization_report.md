@@ -622,17 +622,32 @@ called out here as a deliberate scope choice, not an oversight.
 any read/parse begins — produces an immediate `rejected`-flavored state with
 an explicit "file exceeds 25mb limit" message (Phase 2).
 
-**Wiring**: `useVectorDiagnostics.processVectors` now takes the parsed
+**Wiring**: `useVectorDiagnostics` (`processVectors` renamed `postMatrix`,
+now internal; `ingestFile` is the new public entry point) takes the parsed
 `rows: number[][]` matrix directly and POSTs `{ matrix: rows }` — using
 `MatrixUploadRequest.matrix`, the 2D path the schema already supported but
 the frontend never used, instead of hand-flattening into `data`/`dim` (which
-is how the missing-`dim` bug above happened in the first place). No backend
-route or detection code changed; this is the same `ingest_and_broadcast`
-batch path every other caller uses.
+is how the missing-`dim` bug above happened in the first place). This is the
+same `ingest_and_broadcast` batch path every other caller uses — no
+detection code changed.
+
+**One small backend fix, discovered live, not anticipated in the plan**:
+`MatrixUploadRequest.data: List[float]` had no default, making it a
+*required* field — so a `{matrix: [...]}`-only request (no `data` key at
+all) failed Pydantic validation with a `422` before the handler body (which
+already correctly branches on `request.matrix is not None`) ever ran. Caught
+by the Phase 1 live gate below, not by any existing test — nothing had ever
+actually sent a `matrix`-only request before. Fixed by widening
+`data: List[float]` → `Optional[List[float]] = None`
+(`backend/app/api/main.py`), the same kind of additive/backward-compatible
+relaxation as the earlier idealization pass's `explanation: str → Optional[str]`
+change — every existing caller already sends `data`, so nothing that worked
+before is affected; grepped all test files for `canvas/vectors` calls to
+confirm none rely on `data` being required.
 
 ## Phase 2 — Honest data-source states
 
-`DataSourceState` (new, `frontend/src/ui/dataSourceState.ts`) is a tagged
+`DataSourceState` (new, `frontend/src/canvas/upload/dataSourceState.ts`) is a tagged
 union: `idle | parsing | rejected | partial | loaded | error`, owned by
 `useVectorDiagnostics` and threaded down as a prop — `FileDropZone` is now
 purely presentational for this state, rendering each variant. All new text
@@ -669,11 +684,25 @@ via `python3 tools/make_demo_fixture.py`).
 
 | Gate | Result |
 |---|---|
-| Phase 1 — valid numeric CSV rebuilds scene with new points/clusters | see manual verification below |
-| Phase 1 — outlier rows produce anomaly beacons | see manual verification below |
+| Phase 1 — valid numeric CSV rebuilds scene with new points/clusters | **PASS** — real Playwright drive against the live app: 150 mock points → 200 uploaded points, `vector canvas · LIVE`, multiple HDBSCAN clusters (`noise:59 · c0:7 · c1:69 · c2:9 · c3:31 · c4:13 · c5:12`) |
+| Phase 1 — outlier rows produce anomaly beacons | **PASS** — same run, 4 planted outlier rows (magnitude 2000, seed 42) → `status: ANOMALY`, sidebar shows `anomaly_indices: [197,198,199]` (3 of 4 crossed the 2.5σ threshold this draw — a property of the pre-existing UMAP/Z-score pipeline, not of this sprint's upload code, see note below), magenta `stream · anomaly detected` |
 | Phase 2 — `package.json`-shaped input → `rejected` | pytest/vitest, see Files touched |
 | Phase 2 — mixed CSV → `partial` with correct counts | pytest/vitest, see Files touched |
 | Phase 3 — backend test: batch upload with outlier → anomaly frame → narrative | automated, `test_e2e_upload_narrative.py` |
 | Phase 3 — manual: drop CSV → beacons → `analyzing…` → narrative in tooltip + terminal | see manual verification below |
+
+**Note on anomaly-triggering reliability** (found while building the Phase 1
+gate, relevant to Phase 4's demo fixture too): the existing
+`iye.reduce_to_3d`/`iye.detect_anomalies` pipeline's Z-score check operates
+on the *UMAP-reduced* 3D coordinates, and UMAP is topology- not
+distance-preserving — so whether a small planted-outlier cluster actually
+crosses the 2.5σ threshold in the reduced space is sensitive to sample size
+and the specific random draw, not just the outliers' raw magnitude. Verified
+empirically (30 nominal + 1 outlier, then + 5 outliers at various
+magnitudes): unreliable below ~100 nominal points; `seed=42, n_nominal=196,
+n_outliers=4, outlier_magnitude=2000` reliably and deterministically
+triggers (confirmed 3 consecutive identical runs). This is a pre-existing
+property of `sdk/iye/__init__.py`, untouched this sprint — noted here so the
+Phase 4 demo fixture's parameters aren't mistaken for arbitrary.
 
 (Filled in below as each phase completes verification.)

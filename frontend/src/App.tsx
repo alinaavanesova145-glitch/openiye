@@ -33,28 +33,22 @@ const COLORS = {
 // ─── File Drop Zone ───────────────────────────────────────────────────────────
 
 interface FileDropZoneProps {
-  onFileData: (data: Float32Array) => void
+  onFile: (file: File) => void
 }
 
-const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileData }) => {
+const FileDropZone: React.FC<FileDropZoneProps> = ({ onFile }) => {
   const [isDragging, setIsDragging] = useState(false)
   const [droppedFile, setDroppedFile] = useState<DroppedFile | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // The raw File is handed off as-is; parsing (by actual file format, not a
+  // blind byte reinterpretation) happens in useVectorDiagnostics.ingestFile.
   const processFile = useCallback(
     (file: File) => {
       setDroppedFile({ name: file.name, size: file.size, lastModified: file.lastModified })
-
-      const reader = new FileReader()
-      reader.onload = () => {
-        const buffer = reader.result
-        if (buffer instanceof ArrayBuffer) {
-          onFileData(new Float32Array(buffer))
-        }
-      }
-      reader.readAsArrayBuffer(file)
+      onFile(file)
     },
-    [onFileData],
+    [onFile],
   )
 
   const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
@@ -132,7 +126,7 @@ const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileData }) => {
           ref={inputRef}
           id="iye-file-input"
           type="file"
-          accept=".json,.csv,.npy,.bin"
+          accept=".json,.csv,.npy"
           style={{ display: 'none' }}
           onChange={handleInputChange}
         />
@@ -177,7 +171,7 @@ const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileData }) => {
             >
               drop file or click
               <br />
-              <span style={{ opacity: 0.5 }}>json · csv · npy · bin</span>
+              <span style={{ opacity: 0.5 }}>json · csv · npy</span>
             </div>
           </div>
         )}
@@ -282,13 +276,13 @@ const GlobalStyles: React.FC = () => (
 // ─── Root App ─────────────────────────────────────────────────────────────────
 
 const App: React.FC = () => {
-  const { activeFrame, streamState, processVectors, isLive } = useVectorDiagnostics()
+  const { activeFrame, streamState, ingestFile, isLive } = useVectorDiagnostics()
 
-  const handleFileData = useCallback(
-    (data: Float32Array) => {
-      void processVectors(data)
+  const handleFile = useCallback(
+    (file: File) => {
+      void ingestFile(file)
     },
-    [processVectors],
+    [ingestFile],
   )
 
   return (
@@ -324,7 +318,7 @@ const App: React.FC = () => {
         >
           {/* File drop zone sits above the diagnostic panel */}
           <div style={{ padding: '32px 24px 0 24px' }}>
-            <FileDropZone onFileData={handleFileData} />
+            <FileDropZone onFile={handleFile} />
           </div>
 
           {/* Diagnostic sidebar fills the rest */}

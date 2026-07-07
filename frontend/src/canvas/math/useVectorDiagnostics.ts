@@ -15,6 +15,8 @@ import {
   type StreamState,
   type StreamConfig,
 } from './useVectorStream'
+import { parseFile, MAX_UPLOAD_BYTES } from '@canvas/upload/parseMatrix'
+import { IDLE_DATA_SOURCE_STATE, type DataSourceState } from '@canvas/upload/dataSourceState'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -24,16 +26,17 @@ export interface VectorDiagnosticsResult {
   activeFrame: VectorFrame | null
   /** Current WebSocket connection state. */
   streamState: StreamState
-  /** Process a file-uploaded raw data buffer into a VectorFrame via REST. */
-  processVectors: (rawData: Float32Array) => Promise<void>
+  /** Parse a dropped/selected file and, if valid, ingest it through the same
+   *  detection pipeline the live stream uses. */
+  ingestFile: (file: File) => Promise<void>
   /** Send live axis remapping configuration to the backend stream. */
   configureStream: (config: StreamConfig) => void
   /** True when the canvas is driven by the live WebSocket stream. */
   isLive: boolean
   /** The most recent REST-uploaded frame, if any. */
   restFrame: VectorFrame | null
-  /** True while a REST upload is in progress. */
-  isProcessing: boolean
+  /** Explicit DATA SOURCE panel state — see dataSourceState.ts. */
+  dataSourceState: DataSourceState
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -42,51 +45,99 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
   const { streamState, liveFrame, configureStream, activePort } = useVectorStream()
 
   const [restFrame, setRestFrame] = useState<VectorFrame | null>(null)
-  const [isProcessing, setIsProcessing] = useState<boolean>(false)
+  const [dataSourceState, setDataSourceState] = useState<DataSourceState>(IDLE_DATA_SOURCE_STATE)
 
-  // ── REST file-upload processing ─────────────────────────────────────────
+  // ── REST ingestion — same batch route the SDK/live stream uses ──────────
+  // MatrixUploadRequest.matrix (a 2D array) is sent directly rather than
+  // hand-flattened into `data`/`dim`; this is the path the backend schema
+  // already supported but the frontend never used (see idealization_report.md,
+  // 2026-07-07 sprint, Phase 1).
 
-  const processVectors = useCallback(
-    async (rawData: Float32Array) => {
-      setIsProcessing(true)
-      try {
-        // Convert Float32Array to a nested array of numbers for the JSON payload.
-        // The backend expects a flat array and will reshape it.
-        const dataArray: number[] = Array.from(rawData)
+  const postMatrix = useCallback(
+    async (rows: number[][]): Promise<void> => {
+      const response = await fetch(`http://127.0.0.1:${String(activePort)}/api/canvas/vectors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ matrix: rows }),
+      })
 
-        const response = await fetch(`http://127.0.0.1:${activePort}/api/canvas/vectors`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ data: dataArray }),
-        })
+      if (!response.ok) {
+        throw new Error(`REST upload failed: ${String(response.status)}`)
+      }
 
-        if (!response.ok) {
-          throw new Error(`REST upload failed: ${response.status}`)
+      const frame: unknown = await response.json()
+
+      // Validate the response matches VectorFrame structure, then normalize:
+      // the REST endpoint predates the temporal engine and won't send `id`/
+      // `temporal`, so fill in safe defaults rather than let consumers (e.g.
+      // DiagnosticSidebar reading frame.temporal.window_fill) crash on undefined.
+      // (The live WS frame carrying the real temporal/narrative data arrives
+      // separately and takes rendering priority once it does — see isLive.)
+      if (isValidVectorFrame(frame)) {
+        const normalized: VectorFrame = {
+          ...frame,
+          id: frame.frame_id,
+          temporal: DEFAULT_TEMPORAL_METRICS,
         }
-
-        const frame: unknown = await response.json()
-
-        // Validate the response matches VectorFrame structure, then normalize:
-        // the REST endpoint predates the temporal engine and won't send `id`/
-        // `temporal`, so fill in safe defaults rather than let consumers (e.g.
-        // DiagnosticSidebar reading frame.temporal.window_fill) crash on undefined.
-        if (isValidVectorFrame(frame)) {
-          const normalized: VectorFrame = {
-            ...frame,
-            id: frame.frame_id,
-            temporal: DEFAULT_TEMPORAL_METRICS,
-          }
-          setRestFrame(normalized)
-        }
-      } catch (err) {
-        // Log the error class but not raw user data
-        const errorMessage = err instanceof Error ? err.message : 'unknown error'
-        console.error(`processVectors failed: ${errorMessage}`)
-      } finally {
-        setIsProcessing(false)
+        setRestFrame(normalized)
       }
     },
     [activePort],
+  )
+
+  // ── File ingestion orchestration: size cap → parse → ingest ─────────────
+
+  const ingestFile = useCallback(
+    async (file: File): Promise<void> => {
+      if (file.size > MAX_UPLOAD_BYTES) {
+        const limitMb = (MAX_UPLOAD_BYTES / (1024 * 1024)).toFixed(0)
+        const sizeMb = (file.size / (1024 * 1024)).toFixed(1)
+        setDataSourceState({
+          status: 'rejected',
+          filename: file.name,
+          reason: `file exceeds ${limitMb}mb limit · ${sizeMb}mb`,
+        })
+        return
+      }
+
+      setDataSourceState({ status: 'parsing', filename: file.name })
+
+      const outcome = await parseFile(file)
+      if (outcome.kind === 'rejected') {
+        setDataSourceState({ status: 'rejected', filename: file.name, reason: outcome.reason })
+        return
+      }
+
+      const { rows, rowCount, dim, totalColumns, droppedColumns, droppedRows } = outcome.matrix
+
+      try {
+        await postMatrix(rows)
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'unknown error'
+        console.error(`ingestFile: backend ingest failed: ${errorMessage}`)
+        setDataSourceState({
+          status: 'error',
+          filename: file.name,
+          reason: 'ingest failed · backend unreachable',
+        })
+        return
+      }
+
+      if (droppedColumns > 0 || droppedRows > 0) {
+        setDataSourceState({
+          status: 'partial',
+          filename: file.name,
+          rowCount,
+          dim,
+          totalColumns,
+          droppedColumns,
+          droppedRows,
+        })
+      } else {
+        setDataSourceState({ status: 'loaded', filename: file.name, rowCount, dim })
+      }
+    },
+    [postMatrix],
   )
 
   // ── Data priority: live stream > REST upload ────────────────────────────
@@ -100,11 +151,11 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
   return {
     activeFrame,
     streamState,
-    processVectors,
+    ingestFile,
     configureStream,
     isLive,
     restFrame,
-    isProcessing,
+    dataSourceState,
   }
 }
 
