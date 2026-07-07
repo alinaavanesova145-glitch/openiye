@@ -15,7 +15,7 @@ import {
   type StreamState,
   type StreamConfig,
 } from './useVectorStream'
-import { parseFile, MAX_UPLOAD_BYTES } from '@canvas/upload/parseMatrix'
+import { parseFile, detectFormat, MAX_UPLOAD_BYTES } from '@canvas/upload/parseMatrix'
 import { IDLE_DATA_SOURCE_STATE, type DataSourceState } from '@canvas/upload/dataSourceState'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -102,7 +102,21 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
 
       setDataSourceState({ status: 'parsing', filename: file.name })
 
-      const outcome = await parseFile(file)
+      // Real (not simulated) progress for the chunked CSV path only — JSON.parse
+      // and the NPY byte-reader are atomic, so there's no honest percentage to
+      // report for them; they stay a bare "parsing…".
+      const onProgress =
+        detectFormat(file.name) === 'csv'
+          ? (rowsParsed: number, totalRows: number): void => {
+              setDataSourceState({
+                status: 'parsing',
+                filename: file.name,
+                progress: totalRows > 0 ? rowsParsed / totalRows : undefined,
+              })
+            }
+          : undefined
+
+      const outcome = await parseFile(file, onProgress)
       if (outcome.kind === 'rejected') {
         setDataSourceState({ status: 'rejected', filename: file.name, reason: outcome.reason })
         return

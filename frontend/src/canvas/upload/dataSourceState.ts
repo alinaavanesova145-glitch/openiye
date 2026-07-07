@@ -8,7 +8,7 @@
 
 export type DataSourceState =
   | { status: 'idle' }
-  | { status: 'parsing'; filename: string }
+  | { status: 'parsing'; filename: string; progress?: number }
   | { status: 'rejected'; filename: string; reason: string }
   | {
       status: 'partial'

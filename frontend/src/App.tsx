@@ -1,19 +1,12 @@
-import React, { Suspense, lazy, useState, useCallback, useRef } from 'react'
+import React, { Suspense, lazy, useCallback } from 'react'
 import { useVectorDiagnostics } from '@canvas/math/useVectorDiagnostics'
 import { DiagnosticSidebar } from '@/ui/DiagnosticSidebar'
+import { DataSourcePanel } from '@/ui/DataSourcePanel'
 
 // Lazy-loaded so the shell (sidebar, terminal panel, layout) paints before
 // the three.js/@react-three 3D engine — the vast majority of the bundle —
 // finishes downloading. See vite.config.ts's manualChunks for the vendor split.
 const VectorViewport = lazy(() => import('@canvas/VectorViewport'))
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface DroppedFile {
-  name: string
-  size: number
-  lastModified: number
-}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -29,156 +22,6 @@ const COLORS = {
   textMuted: 'rgba(255, 255, 255, 0.38)',
   divider: 'rgba(255, 182, 193, 0.08)',
 } as const
-
-// ─── File Drop Zone ───────────────────────────────────────────────────────────
-
-interface FileDropZoneProps {
-  onFile: (file: File) => void
-}
-
-const FileDropZone: React.FC<FileDropZoneProps> = ({ onFile }) => {
-  const [isDragging, setIsDragging] = useState(false)
-  const [droppedFile, setDroppedFile] = useState<DroppedFile | null>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
-
-  // The raw File is handed off as-is; parsing (by actual file format, not a
-  // blind byte reinterpretation) happens in useVectorDiagnostics.ingestFile.
-  const processFile = useCallback(
-    (file: File) => {
-      setDroppedFile({ name: file.name, size: file.size, lastModified: file.lastModified })
-      onFile(file)
-    },
-    [onFile],
-  )
-
-  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    setIsDragging(true)
-  }, [])
-
-  const handleDragLeave = useCallback(() => {
-    setIsDragging(false)
-  }, [])
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent<HTMLDivElement>) => {
-      e.preventDefault()
-      setIsDragging(false)
-      const file = e.dataTransfer.files[0]
-      if (file) {
-        processFile(file)
-      }
-    },
-    [processFile],
-  )
-
-  const handleInputChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0]
-      if (file) {
-        processFile(file)
-      }
-    },
-    [processFile],
-  )
-
-  const formatBytes = (bytes: number): string => {
-    if (bytes < 1024) return `${String(bytes)} b`
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} kb`
-    return `${(bytes / (1024 * 1024)).toFixed(1)} mb`
-  }
-
-  return (
-    <div style={{ marginBottom: 28 }}>
-      <p
-        style={{
-          margin: '0 0 10px 0',
-          fontSize: 9,
-          letterSpacing: '0.2em',
-          textTransform: 'uppercase',
-          color: COLORS.textMuted,
-        }}
-      >
-        data source
-      </p>
-
-      <div
-        id="iye-file-drop-zone"
-        role="button"
-        tabIndex={0}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-        onClick={() => inputRef.current?.click()}
-        onKeyDown={(e) => e.key === 'Enter' && inputRef.current?.click()}
-        style={{
-          border: `1px dashed ${isDragging ? COLORS.pink : COLORS.pinkBorder}`,
-          borderRadius: 8,
-          padding: '20px 16px',
-          textAlign: 'center',
-          cursor: 'pointer',
-          background: isDragging ? COLORS.pinkDim : 'transparent',
-          transition: 'all 0.18s ease',
-          outline: 'none',
-        }}
-      >
-        <input
-          ref={inputRef}
-          id="iye-file-input"
-          type="file"
-          accept=".json,.csv,.npy"
-          style={{ display: 'none' }}
-          onChange={handleInputChange}
-        />
-
-        {droppedFile ? (
-          <div>
-            <div
-              style={{
-                fontSize: 11,
-                color: COLORS.pink,
-                marginBottom: 4,
-                fontWeight: 500,
-                letterSpacing: '0.04em',
-                wordBreak: 'break-all',
-              }}
-            >
-              {droppedFile.name}
-            </div>
-            <div style={{ fontSize: 9, color: COLORS.textMuted, letterSpacing: '0.08em' }}>
-              {formatBytes(droppedFile.size)}
-            </div>
-          </div>
-        ) : (
-          <div>
-            <div
-              style={{
-                fontSize: 18,
-                marginBottom: 8,
-                opacity: 0.4,
-                color: COLORS.pink,
-              }}
-            >
-              ↓
-            </div>
-            <div
-              style={{
-                fontSize: 10,
-                color: COLORS.textMuted,
-                letterSpacing: '0.08em',
-                lineHeight: 1.6,
-              }}
-            >
-              drop file or click
-              <br />
-              <span style={{ opacity: 0.5 }}>json · csv · npy</span>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
 
 // ─── Viewport Panel ───────────────────────────────────────────────────────────
 
@@ -276,7 +119,7 @@ const GlobalStyles: React.FC = () => (
 // ─── Root App ─────────────────────────────────────────────────────────────────
 
 const App: React.FC = () => {
-  const { activeFrame, streamState, ingestFile, isLive } = useVectorDiagnostics()
+  const { activeFrame, streamState, ingestFile, isLive, dataSourceState } = useVectorDiagnostics()
 
   const handleFile = useCallback(
     (file: File) => {
@@ -318,7 +161,7 @@ const App: React.FC = () => {
         >
           {/* File drop zone sits above the diagnostic panel */}
           <div style={{ padding: '32px 24px 0 24px' }}>
-            <FileDropZone onFile={handleFile} />
+            <DataSourcePanel state={dataSourceState} onFile={handleFile} />
           </div>
 
           {/* Diagnostic sidebar fills the rest */}

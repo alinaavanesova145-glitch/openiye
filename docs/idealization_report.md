@@ -647,14 +647,26 @@ confirm none rely on `data` being required.
 
 ## Phase 2 — Honest data-source states
 
-`DataSourceState` (new, `frontend/src/canvas/upload/dataSourceState.ts`) is a tagged
-union: `idle | parsing | rejected | partial | loaded | error`, owned by
-`useVectorDiagnostics` and threaded down as a prop — `FileDropZone` is now
-purely presentational for this state, rendering each variant. All new text
-is blush-tier (`rgba(255,182,193,*)`), lowercase, hairline borders — no
-magenta anywhere in this component (magenta stays reserved for
-`status: "ANOMALY"` elsewhere). `rejected` renders its message at ~70%
-blush per spec (`rgba(255,182,193,0.7)`).
+`DataSourceState` (new, `frontend/src/canvas/upload/dataSourceState.ts`) is a
+tagged union: `idle | parsing | rejected | partial | loaded | error`, owned
+by `useVectorDiagnostics` and threaded down as a prop. The old inline
+`FileDropZone` in `App.tsx` was replaced by a new, dedicated
+`frontend/src/ui/DataSourcePanel.tsx` (same extraction pattern as
+`DiagnosticSidebar.tsx` — its own file, its own test file) — purely
+presentational, rendering each variant from props alone. All new text is
+blush-tier (`rgba(255,182,193,*)`), lowercase, hairline borders — no magenta
+anywhere in this component (magenta stays reserved for `status: "ANOMALY"`
+elsewhere; a dedicated test asserts no state's rendered output contains
+magenta). `rejected` and `error` render their message at ~70% blush per spec
+(`rgba(255,182,193,0.7)`); `partial` at 50%, `loaded`/`parsing` at 60%,
+distinguishing "clean success" from "success with a caveat" from "failure"
+by tier alone, no new hue introduced.
+
+`parsing` also carries an optional `progress` (0–1) — genuinely wired from
+`parseCsvMatrix`'s chunk callback (`useVectorDiagnostics.ingestFile` passes
+`onProgress` only for the `.csv` path), rendered as `parsing… NN%`. `.json`/
+`.npy` parsing is atomic (`JSON.parse`, one pass over the byte buffer) —
+those show a bare `parsing…` rather than a fabricated percentage.
 
 ## Phase 3 — Narrative surfacing + `llm` status indicator
 
@@ -686,8 +698,8 @@ via `python3 tools/make_demo_fixture.py`).
 |---|---|
 | Phase 1 — valid numeric CSV rebuilds scene with new points/clusters | **PASS** — real Playwright drive against the live app: 150 mock points → 200 uploaded points, `vector canvas · LIVE`, multiple HDBSCAN clusters (`noise:59 · c0:7 · c1:69 · c2:9 · c3:31 · c4:13 · c5:12`) |
 | Phase 1 — outlier rows produce anomaly beacons | **PASS** — same run, 4 planted outlier rows (magnitude 2000, seed 42) → `status: ANOMALY`, sidebar shows `anomaly_indices: [197,198,199]` (3 of 4 crossed the 2.5σ threshold this draw — a property of the pre-existing UMAP/Z-score pipeline, not of this sprint's upload code, see note below), magenta `stream · anomaly detected` |
-| Phase 2 — `package.json`-shaped input → `rejected` | pytest/vitest, see Files touched |
-| Phase 2 — mixed CSV → `partial` with correct counts | pytest/vitest, see Files touched |
+| Phase 2 — `package.json`-shaped input → `rejected` | **PASS** — `parseMatrix.test.ts` (unit) + live Playwright drive of the *real* repo `package.json` into the running app: panel shows `package.json` / `no numeric vectors found · expected rows of numbers · json / csv / npy`, zero console errors, previous scene (150 mock points) untouched |
+| Phase 2 — mixed CSV → `partial` with correct counts | **PASS** — `DataSourcePanel.test.tsx`: `loaded 4 of 6 columns · 2 non-numeric skipped` for a 2-non-numeric-column fixture |
 | Phase 3 — backend test: batch upload with outlier → anomaly frame → narrative | automated, `test_e2e_upload_narrative.py` |
 | Phase 3 — manual: drop CSV → beacons → `analyzing…` → narrative in tooltip + terminal | see manual verification below |
 
