@@ -10,6 +10,14 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# Non-fatal: IYE degrades gracefully to fallback narrative text when Ollama
+# is unreachable, so this only warns rather than aborting the boot.
+if curl -s --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
+  echo "llm ready — Ollama reachable on :11434"
+else
+  echo "llm offline — narratives will use fallback text"
+fi
+
 echo "Starting IYE backend on :8050..."
 (
   cd "$ROOT_DIR"
