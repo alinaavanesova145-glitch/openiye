@@ -122,3 +122,25 @@ additive with defaults (`id: null`, `type: "frame"`, `temporal: null`) so an
 older consumer that only reads `frame_id`/`status`/`coordinates`/etc. and
 ignores unknown fields still parses today's payload unmodified. See
 `backend/tests/test_schema_compat.py` for the enforcement test.
+
+## REST — `/api/health`
+
+Not part of the `/stream` protocol above, but documented here since the
+frontend's `llm` sidebar indicator depends on it (2026-07-07 sprint, Phase 3).
+
+```json
+{
+  "status": "healthy",
+  "service": "iye-backend-engine",
+  "timestamp": "2026-07-07T11:12:32.811995+00:00",
+  "llm": "ready"
+}
+```
+
+`llm` is additive (`"unknown" | "ready" | "offline"`). Set once at backend
+startup via a single lightweight `GET {ollama_base}/api/tags`, and
+thereafter updated for free from the real outcome of every
+`generate_anomaly_explanation` call — never polled per-frame or on a timer.
+`"offline"` does not mean narratives stop working: the deterministic
+fallback string still gets delivered over `/stream`; this field only makes
+that degradation visible in the UI instead of silent.

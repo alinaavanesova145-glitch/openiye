@@ -58,6 +58,27 @@ logger = logging.getLogger("iye.api")
 
 OLLAMA_API_URL = os.environ.get("OLLAMA_API_URL", "http://localhost:11434/api/generate")
 
+# Cheap, coarse-grained LLM availability signal for the frontend's `llm`
+# indicator — set once at startup (a single lightweight GET) and thereafter
+# updated for free from the real outcome of every generate_anomaly_explanation
+# call (success -> ready, failure -> offline). Never polled per-frame.
+_llm_status: str = "unknown"  # "unknown" | "ready" | "offline"
+
+
+def _set_llm_status(status: str) -> None:
+    global _llm_status
+    _llm_status = status
+
+
+async def _startup_llm_healthcheck() -> None:
+    base = OLLAMA_API_URL.rsplit("/api/", 1)[0]
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get(f"{base}/api/tags")
+            _set_llm_status("ready" if response.status_code == 200 else "offline")
+    except Exception:
+        _set_llm_status("offline")
+
 
 async def generate_anomaly_explanation(metrics_summary: str) -> str:
     """Queries local LLaMA via Ollama to generate a crisp tactical explanation."""
@@ -73,9 +94,11 @@ async def generate_anomaly_explanation(metrics_summary: str) -> str:
                 json={"model": "llama3", "prompt": prompt, "stream": False}
             )
             if response.status_code == 200:
+                _set_llm_status("ready")
                 return response.json().get("response", "").strip()
     except Exception as e:
         logger.warning("LLaMA inference failed, falling back to basic telemetry: %s", e)
+    _set_llm_status("offline")
     return "Telemetry Alert: Structural vector variance exceeded nominal Z-score boundary."
 
 # ─── FastAPI Application ──────────────────────────────────────────────────────
@@ -83,6 +106,7 @@ async def generate_anomaly_explanation(metrics_summary: str) -> str:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    await _startup_llm_healthcheck()
     yield
     await _cancel_pending_narratives()
 
@@ -214,6 +238,7 @@ async def health_check():
         "status": "healthy",
         "service": "iye-backend-engine",
         "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+        "llm": _llm_status,
     }
 
 

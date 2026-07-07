@@ -119,7 +119,8 @@ const GlobalStyles: React.FC = () => (
 // ─── Root App ─────────────────────────────────────────────────────────────────
 
 const App: React.FC = () => {
-  const { activeFrame, streamState, ingestFile, isLive, dataSourceState } = useVectorDiagnostics()
+  const { activeFrame, streamState, ingestFile, isLive, dataSourceState, llmStatus } =
+    useVectorDiagnostics()
 
   const handleFile = useCallback(
     (file: File) => {
@@ -165,7 +166,12 @@ const App: React.FC = () => {
           </div>
 
           {/* Diagnostic sidebar fills the rest */}
-          <DiagnosticSidebar streamState={streamState} activeFrame={activeFrame} isLive={isLive} />
+          <DiagnosticSidebar
+            streamState={streamState}
+            activeFrame={activeFrame}
+            isLive={isLive}
+            llmStatus={llmStatus}
+          />
         </div>
       </div>
     </>

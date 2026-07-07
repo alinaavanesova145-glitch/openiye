@@ -682,8 +682,22 @@ routing changes were needed.
 thereafter updated for free from the *real* outcome of every
 `generate_anomaly_explanation` call (success → `ready`, exception → `offline`)
 — zero additional pings, never probed per-frame, exactly as instructed.
-Exposed additively on `/api/health` as `"llm"`. Frontend fetches
-`/api/health` once on mount.
+Exposed additively on `/api/health` as `"llm"` (documented in `docs/protocol.md`'s
+new REST section). Frontend (`useVectorDiagnostics.ts`) fetches `/api/health`
+at mount, and again — event-driven, not a timer — every time an anomaly
+frame's explanation actually resolves (`narrativeResolutionKey`, keyed on
+`${liveFrame.id}:${liveFrame.explanation}`), so the indicator doesn't go
+stale for the rest of the session after the very first narrative attempt;
+found necessary live (see gate below) when a real Ollama request exceeded
+the 10s timeout mid-verification and the indicator needed to reflect that.
+
+Backend test: `test_e2e_upload_narrative.py` reuses the hermetic
+uvicorn-subprocess + stubbed-Ollama fixtures, extracted from
+`test_e2e_narrative.py` into a new `conftest.py` (`stub_ollama_port`,
+`live_backend`, `CANNED_NARRATIVE`) rather than duplicated, per the
+instruction to reuse existing machinery. Asserts a `matrix`-shaped
+(upload-style) POST with a planted outlier yields `status: ANOMALY` then a
+correlated `narrative` message — the exact path uploads take.
 
 ## Phase 4 — Demo fixture
 
@@ -700,8 +714,44 @@ via `python3 tools/make_demo_fixture.py`).
 | Phase 1 — outlier rows produce anomaly beacons | **PASS** — same run, 4 planted outlier rows (magnitude 2000, seed 42) → `status: ANOMALY`, sidebar shows `anomaly_indices: [197,198,199]` (3 of 4 crossed the 2.5σ threshold this draw — a property of the pre-existing UMAP/Z-score pipeline, not of this sprint's upload code, see note below), magenta `stream · anomaly detected` |
 | Phase 2 — `package.json`-shaped input → `rejected` | **PASS** — `parseMatrix.test.ts` (unit) + live Playwright drive of the *real* repo `package.json` into the running app: panel shows `package.json` / `no numeric vectors found · expected rows of numbers · json / csv / npy`, zero console errors, previous scene (150 mock points) untouched |
 | Phase 2 — mixed CSV → `partial` with correct counts | **PASS** — `DataSourcePanel.test.tsx`: `loaded 4 of 6 columns · 2 non-numeric skipped` for a 2-non-numeric-column fixture |
-| Phase 3 — backend test: batch upload with outlier → anomaly frame → narrative | automated, `test_e2e_upload_narrative.py` |
-| Phase 3 — manual: drop CSV → beacons → `analyzing…` → narrative in tooltip + terminal | see manual verification below |
+| Phase 3 — backend test: batch upload with outlier → anomaly frame → narrative | **PASS** — `test_e2e_upload_narrative.py` (27th backend test), real uvicorn subprocess + stubbed Ollama, reused `conftest.py` fixtures |
+| Phase 3 — manual: drop CSV → beacons → `analyzing…` → narrative in tooltip + terminal | **PASS** (with one honest gap, see below) |
+
+**Phase 3 manual gate, in detail.** Live Playwright drive against the running
+app with a *real* Ollama (llama3, installed this environment per an earlier
+session — see the "local llm setup" README section): dropped a 200-row/4-outlier
+CSV → `ANOMALY` status + `stream · anomaly detected` → bottom terminal panel
+("AI CORE ANALYSIS") showed `analyzing…` → narrative resolved in both the
+terminal panel and the sidebar's `ANALYSIS` block
+("Telemetry Alert: Structural vector variance exceeded nominal Z-score
+boundary."). The resolved text is the **deterministic fallback**, not a real
+LLaMA completion — consistent with the already-documented finding that this
+hardware's realistic-prompt generation latency (~15-22s) exceeds the app's
+hardcoded 10s httpx timeout (see the Ollama setup session's final report).
+This is a hardware/timeout fact, not a defect introduced by this sprint — the
+mechanism (frame → analyzing… → narrative, correlated by id, rendered in two
+places from the one shared `resolveExplanationDisplay` function) is proven
+correctly end to end regardless of which text wins the race.
+
+**Gap, stated honestly**: did not capture an automated screenshot of the
+mouse-hover 3D beacon tooltip specifically (its trigger area is a handful of
+screen pixels on a projected 3D point — the same category of hard-to-force
+timing/targeting issue noted for the Suspense fallback in the prior sprint).
+The terminal panel is the always-visible instantiation of the identical
+shared `resolveExplanationDisplay` function the hover tooltip also calls
+(unit-tested directly in `VectorViewport.pulse.test.ts` since the prior
+sprint) — so the *logic* is covered by both an automated unit test and this
+live run; only the specific hover-triggered `<Html>` mount wasn't captured
+pixel-by-pixel in this pass.
+
+**`llm` indicator, live-verified through both states**: showed `llm · ready`
+immediately at boot (real startup healthcheck against the running Ollama),
+then flipped to `llm · offline · fallback narratives` — correctly reflecting
+that the just-completed narrative attempt used the fallback — without any
+polling loop; the frontend re-checks `/api/health` only at mount and again
+each time an anomaly frame's explanation actually resolves (see
+`useVectorDiagnostics.ts`'s `narrativeResolutionKey` effect), mirroring
+exactly when the backend itself last touched Ollama.
 
 **Note on anomaly-triggering reliability** (found while building the Phase 1
 gate, relevant to Phase 4's demo fixture too): the existing

@@ -7,7 +7,7 @@
  * over manual file-drop uploads.
  */
 
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useEffect } from 'react'
 import {
   useVectorStream,
   DEFAULT_TEMPORAL_METRICS,
@@ -19,6 +19,11 @@ import { parseFile, detectFormat, MAX_UPLOAD_BYTES } from '@canvas/upload/parseM
 import { IDLE_DATA_SOURCE_STATE, type DataSourceState } from '@canvas/upload/dataSourceState'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+/** Coarse-grained LLM availability from /api/health — refreshed at mount and
+ *  after each anomaly narrative resolves, never polled per-frame or on a
+ *  timer. See docs/idealization_report.md, Phase 3. */
+export type LlmStatus = 'unknown' | 'ready' | 'offline'
 
 /** Result shape returned by the unified diagnostics hook. */
 export interface VectorDiagnosticsResult {
@@ -37,6 +42,8 @@ export interface VectorDiagnosticsResult {
   restFrame: VectorFrame | null
   /** Explicit DATA SOURCE panel state — see dataSourceState.ts. */
   dataSourceState: DataSourceState
+  /** Ollama availability, per the backend's own startup healthcheck. */
+  llmStatus: LlmStatus
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -46,6 +53,51 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
 
   const [restFrame, setRestFrame] = useState<VectorFrame | null>(null)
   const [dataSourceState, setDataSourceState] = useState<DataSourceState>(IDLE_DATA_SOURCE_STATE)
+  const [llmStatus, setLlmStatus] = useState<LlmStatus>('unknown')
+
+  const refreshLlmStatus = useCallback(
+    (signal?: { cancelled: boolean }) => {
+      fetch(`http://127.0.0.1:${String(activePort)}/api/health`)
+        .then((res) => res.json())
+        .then((body: unknown) => {
+          if (signal?.cancelled) return
+          const status =
+            typeof body === 'object' && body !== null && (body as Record<string, unknown>).llm
+          setLlmStatus(status === 'ready' || status === 'offline' ? status : 'unknown')
+        })
+        .catch(() => {
+          if (!signal?.cancelled) setLlmStatus('unknown')
+        })
+    },
+    [activePort],
+  )
+
+  // Checked once at mount, and again — event-driven, not on a timer — every
+  // time an anomaly frame's explanation actually resolves (real or
+  // fallback), mirroring exactly when the backend itself last touched
+  // Ollama. Never polled per-frame or on an interval.
+  useEffect(() => {
+    const signal = { cancelled: false }
+    refreshLlmStatus(signal)
+    return () => {
+      signal.cancelled = true
+    }
+  }, [refreshLlmStatus])
+
+  const narrativeResolutionKey =
+    liveFrame?.status === 'ANOMALY' && liveFrame.explanation !== null
+      ? `${liveFrame.id}:${liveFrame.explanation}`
+      : null
+
+  useEffect(() => {
+    if (narrativeResolutionKey === null) return
+    const signal = { cancelled: false }
+    refreshLlmStatus(signal)
+    return () => {
+      signal.cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the resolution event itself, not refreshLlmStatus's identity
+  }, [narrativeResolutionKey])
 
   // ── REST ingestion — same batch route the SDK/live stream uses ──────────
   // MatrixUploadRequest.matrix (a 2D array) is sent directly rather than
@@ -170,6 +222,7 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
     isLive,
     restFrame,
     dataSourceState,
+    llmStatus,
   }
 }
 

@@ -12,6 +12,7 @@
 
 import React, { useMemo } from 'react'
 import type { StreamState, VectorFrame } from '@canvas/math/useVectorStream'
+import type { LlmStatus } from '@canvas/math/useVectorDiagnostics'
 
 // ─── Design Tokens ────────────────────────────────────────────────────────────
 
@@ -38,6 +39,7 @@ export interface DiagnosticSidebarProps {
   streamState: StreamState
   activeFrame: VectorFrame | null
   isLive: boolean
+  llmStatus?: LlmStatus
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -86,6 +88,56 @@ const ConnectivityDot: React.FC<{
           background: dotColor,
           boxShadow: `0 0 10px ${dotColor}, 0 0 4px ${dotColor}`,
           animation: 'iye-pulse 2.4s ease-in-out infinite',
+          flexShrink: 0,
+        }}
+      />
+      <span
+        style={{
+          fontSize: 9,
+          letterSpacing: '0.16em',
+          color: COLORS.textMuted,
+          textTransform: 'lowercase',
+          fontFamily: MONO_FONT,
+        }}
+      >
+        {label}
+      </span>
+    </div>
+  )
+}
+
+/**
+ * `llm` availability indicator, next to the `stream` connectivity dot.
+ * Reflects a coarse-grained backend healthcheck (startup + real-usage
+ * outcomes) — never polled per-frame, see useVectorDiagnostics.ts.
+ */
+const LlmIndicator: React.FC<{ llmStatus: LlmStatus }> = ({ llmStatus }) => {
+  const dotColor = llmStatus === 'offline' ? COLORS.offline : COLORS.pink
+  const label =
+    llmStatus === 'ready'
+      ? 'llm · ready'
+      : llmStatus === 'offline'
+        ? 'llm · offline · fallback narratives'
+        : 'llm · checking…'
+
+  return (
+    <div
+      id="iye-llm-indicator"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '0 0 20px 0',
+      }}
+    >
+      <div
+        style={{
+          width: 7,
+          height: 7,
+          borderRadius: '50%',
+          background: dotColor,
+          opacity: llmStatus === 'unknown' ? 0.4 : 1,
+          boxShadow: llmStatus === 'unknown' ? 'none' : `0 0 10px ${dotColor}, 0 0 4px ${dotColor}`,
           flexShrink: 0,
         }}
       />
@@ -261,6 +313,7 @@ export const DiagnosticSidebar: React.FC<DiagnosticSidebarProps> = ({
   streamState,
   activeFrame,
   isLive,
+  llmStatus = 'unknown',
 }) => {
   return (
     <div
@@ -343,6 +396,7 @@ export const DiagnosticSidebar: React.FC<DiagnosticSidebarProps> = ({
 
       {/* ── Connectivity indicator ───────────────────────────────────── */}
       <ConnectivityDot streamState={streamState} status={activeFrame?.status ?? null} />
+      <LlmIndicator llmStatus={llmStatus} />
 
       {/* ── Active frame metadata ────────────────────────────────────── */}
       {activeFrame && <FrameMetadata frame={activeFrame} />}

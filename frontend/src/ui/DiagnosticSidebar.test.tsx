@@ -92,4 +92,28 @@ describe('DiagnosticSidebar', () => {
     render(<DiagnosticSidebar streamState="disconnected" activeFrame={null} isLive={false} />)
     expect(screen.getByText('stream · offline')).toBeInTheDocument()
   })
+
+  it('defaults the llm indicator to "checking…" when llmStatus is omitted', () => {
+    render(<DiagnosticSidebar streamState="connected" activeFrame={null} isLive={false} />)
+    expect(screen.getByText('llm · checking…')).toBeInTheDocument()
+  })
+
+  it('shows "llm · ready" when the backend healthcheck reports ready', () => {
+    render(
+      <DiagnosticSidebar streamState="connected" activeFrame={null} isLive={false} llmStatus="ready" />,
+    )
+    expect(screen.getByText('llm · ready')).toBeInTheDocument()
+  })
+
+  it('shows the fallback-narratives message when Ollama is offline', () => {
+    render(
+      <DiagnosticSidebar
+        streamState="connected"
+        activeFrame={null}
+        isLive={false}
+        llmStatus="offline"
+      />,
+    )
+    expect(screen.getByText('llm · offline · fallback narratives')).toBeInTheDocument()
+  })
 })
