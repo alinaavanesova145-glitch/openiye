@@ -125,8 +125,16 @@ const GlobalStyles: React.FC = () => (
 // ─── Root App ─────────────────────────────────────────────────────────────────
 
 const App: React.FC = () => {
-  const { activeFrame, streamState, ingestFile, isLive, dataSourceState, llmStatus } =
-    useVectorDiagnostics()
+  const {
+    activeFrame,
+    streamState,
+    ingestFile,
+    confirmOffer,
+    dismissOffer,
+    isLive,
+    dataSourceState,
+    llmStatus,
+  } = useVectorDiagnostics()
 
   const handleFile = useCallback(
     (file: File) => {
@@ -134,6 +142,10 @@ const App: React.FC = () => {
     },
     [ingestFile],
   )
+
+  const handleConfirmOffer = useCallback(() => {
+    void confirmOffer()
+  }, [confirmOffer])
 
   return (
     <>
@@ -169,7 +181,12 @@ const App: React.FC = () => {
         >
           {/* File drop zone sits above the diagnostic panel */}
           <div style={{ padding: '32px 24px 0 24px' }}>
-            <DataSourcePanel state={dataSourceState} onFile={handleFile} />
+            <DataSourcePanel
+              state={dataSourceState}
+              onFile={handleFile}
+              onConfirmOffer={handleConfirmOffer}
+              onDismissOffer={dismissOffer}
+            />
           </div>
 
           {/* Diagnostic sidebar fills the rest */}

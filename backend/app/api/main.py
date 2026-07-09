@@ -221,6 +221,18 @@ async def _cancel_pending_narratives() -> None:
 
 # ─── Pydantic Schemas ─────────────────────────────────────────────────────────
 
+class EncodingSummary(BaseModel):
+    """Additive, optional — rides an upload request/response only when the
+    frontend actually encoded categorical columns (see parseMatrix.ts's
+    buildFeatureMatrix). Lets the narrative prompt and the response payload
+    both know some dimensions are encoded categories, not raw measurements."""
+    total_columns: int
+    numeric_columns: int
+    encoded_categorical_columns: int
+    encoded_dims: int
+    skipped_free_text: int
+
+
 class MatrixUploadRequest(BaseModel):
     """Flat-float or nested-float matrix payload for ingestion."""
     # Optional (not required) so a `matrix`-only request validates — the two
@@ -229,6 +241,7 @@ class MatrixUploadRequest(BaseModel):
     data: Optional[List[float]] = None
     dim: Optional[int] = 6          # feature dimension, default 6D metrics matrix
     matrix: Optional[List[List[float]]] = None
+    encoding_summary: Optional[EncodingSummary] = None
 
 # ─── REST Routes ──────────────────────────────────────────────────────────────
 
@@ -320,6 +333,7 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
         explanation     = expl,
         axis_mapping    = None,
         temporal        = temporal_metrics.model_dump(),
+        encoding_summary = request.encoding_summary.model_dump() if request.encoding_summary else None,
     )
 
     # Broadcast cleanly to our explicit stream endpoint
@@ -327,6 +341,13 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
 
     if anomaly_idx:
         metrics_summary = str(data_2d[anomaly_idx[0]].tolist())
+        if request.encoding_summary is not None:
+            enc = request.encoding_summary
+            metrics_summary += (
+                f" (Note: {enc.encoded_categorical_columns} of the {enc.total_columns} "
+                f"source column(s) are encoded categorical features — {enc.encoded_dims} "
+                f"of this vector's dimensions are encoded categories, not raw measurements.)"
+            )
         _spawn_narrative_task(frame_id, metrics_summary)
 
     return payload

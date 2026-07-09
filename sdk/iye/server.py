@@ -71,6 +71,15 @@ class VectorFramePayload(BaseModel):
         default=None,
         description="Additive sliding-window temporal metrics (see temporal_engine.TemporalMetrics)",
     )
+    encoding_summary: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Additive — echoed back only when the ingested matrix included "
+            "encoded categorical columns (see backend/app/api/main.py's "
+            "EncodingSummary and frontend parseMatrix.ts). Null for ordinary "
+            "numeric-only frames."
+        ),
+    )
 
 
 # ─── StreamHub ─────────────────────────────────────────────────────────────────

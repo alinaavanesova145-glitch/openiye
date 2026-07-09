@@ -76,6 +76,10 @@ Run `./boot.sh`, open `http://localhost:3000`, then drag
 [`demo/sample_telemetry.csv`](demo/sample_telemetry.csv) (200 rows, 4 planted
 outliers — regenerate via `python3 tools/make_demo_fixture.py`) onto the DATA
 SOURCE panel to see the full upload-to-insight pipeline in one drop.
+[`demo/sample_telemetry_mixed.csv`](demo/sample_telemetry_mixed.csv) (204
+rows, 6 numeric + 1 categorical column) demonstrates automatic categorical
+encoding — dropping it shows the panel's encoded-column facts instead of the
+old drop-non-numeric-columns behavior.
 
 ## Local LLM setup (Ollama)
 

@@ -23,6 +23,12 @@ import requests
 
 CANNED_NARRATIVE = "Stubbed narrative: structural drift detected on axis 2."
 
+# Populated by _StubOllamaHandler with each request's "prompt" field — lets a
+# test assert on what the backend actually sent to "Ollama" (e.g. that an
+# encoding_summary note was appended), not just that a response came back.
+# Cleared at the start of every stub_ollama_port fixture use.
+received_prompts: "list[str]" = []
+
 
 def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -33,7 +39,11 @@ def _find_free_port() -> int:
 class _StubOllamaHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802 (http.server's required method name)
         length = int(self.headers.get("Content-Length", 0))
-        self.rfile.read(length)  # drain the request body; content is irrelevant to the stub
+        raw = self.rfile.read(length)
+        try:
+            received_prompts.append(json.loads(raw).get("prompt", ""))
+        except (json.JSONDecodeError, AttributeError):
+            received_prompts.append("")
         body = json.dumps({"response": CANNED_NARRATIVE}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -47,6 +57,7 @@ class _StubOllamaHandler(http.server.BaseHTTPRequestHandler):
 
 @pytest.fixture()
 def stub_ollama_port():
+    received_prompts.clear()
     port = _find_free_port()
     server = http.server.HTTPServer(("127.0.0.1", port), _StubOllamaHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)

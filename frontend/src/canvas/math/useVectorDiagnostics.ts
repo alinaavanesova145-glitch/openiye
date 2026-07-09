@@ -7,7 +7,7 @@
  * over manual file-drop uploads.
  */
 
-import { useState, useCallback, useMemo, useEffect } from 'react'
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import {
   useVectorStream,
   DEFAULT_TEMPORAL_METRICS,
@@ -15,8 +15,20 @@ import {
   type StreamState,
   type StreamConfig,
 } from './useVectorStream'
-import { parseFile, detectFormat, MAX_UPLOAD_BYTES } from '@canvas/upload/parseMatrix'
+import { parseFile, detectFormat, MAX_UPLOAD_BYTES, type EncodingSummary } from '@canvas/upload/parseMatrix'
 import { IDLE_DATA_SOURCE_STATE, type DataSourceState } from '@canvas/upload/dataSourceState'
+
+/** Wire shape for MatrixUploadRequest.encoding_summary (additive, snake_case
+ *  to match the rest of the WS/REST payload convention). See docs/protocol.md. */
+function toWireEncodingSummary(encoding: EncodingSummary) {
+  return {
+    total_columns: encoding.totalColumns,
+    numeric_columns: encoding.numericColumns,
+    encoded_categorical_columns: encoding.encodedCategoricalColumns,
+    encoded_dims: encoding.encodedDims,
+    skipped_free_text: encoding.skippedFreeText,
+  }
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -34,6 +46,11 @@ export interface VectorDiagnosticsResult {
   /** Parse a dropped/selected file and, if valid, ingest it through the same
    *  detection pipeline the live stream uses. */
   ingestFile: (file: File) => Promise<void>
+  /** Confirms a pending `offer` state (zero-numeric-columns, encodable
+   *  categorical file) — only now does the ingest/visualize actually run. */
+  confirmOffer: () => Promise<void>
+  /** Dismisses a pending `offer` back to `idle` without ever ingesting. */
+  dismissOffer: () => void
   /** Send live axis remapping configuration to the backend stream. */
   configureStream: (config: StreamConfig) => void
   /** True when the canvas is driven by the live WebSocket stream. */
@@ -106,11 +123,18 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
   // 2026-07-07 sprint, Phase 1).
 
   const postMatrix = useCallback(
-    async (rows: number[][]): Promise<void> => {
+    async (rows: number[][], encoding?: EncodingSummary): Promise<void> => {
+      const body: Record<string, unknown> = { matrix: rows }
+      // Only sent when categorical encoding actually happened — omitted
+      // entirely for a pure-numeric upload, so that request shape is
+      // byte-for-byte unchanged from before this field existed.
+      if (encoding && encoding.encodedCategoricalColumns > 0) {
+        body.encoding_summary = toWireEncodingSummary(encoding)
+      }
       const response = await fetch(`http://127.0.0.1:${String(activePort)}/api/canvas/vectors`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ matrix: rows }),
+        body: JSON.stringify(body),
       })
 
       if (!response.ok) {
@@ -138,6 +162,14 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
   )
 
   // ── File ingestion orchestration: size cap → parse → ingest ─────────────
+  // A zero-numeric-columns file with encodable categorical structure stops
+  // at `offer` — nothing is ingested/visualized until the user explicitly
+  // confirms (see confirmOffer/dismissOffer below). IYE never fabricates
+  // geometry from pure-text data without consent.
+
+  const pendingOfferRef = useRef<{ filename: string; rows: number[][]; encoding: EncodingSummary } | null>(
+    null,
+  )
 
   const ingestFile = useCallback(
     async (file: File): Promise<void> => {
@@ -174,10 +206,26 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
         return
       }
 
-      const { rows, rowCount, dim, totalColumns, droppedColumns, droppedRows } = outcome.matrix
+      if (outcome.kind === 'offer') {
+        pendingOfferRef.current = {
+          filename: file.name,
+          rows: outcome.matrix.rows,
+          encoding: outcome.matrix.encoding,
+        }
+        setDataSourceState({
+          status: 'offer',
+          filename: file.name,
+          rowCount: outcome.matrix.rowCount,
+          dim: outcome.matrix.dim,
+          encoding: outcome.matrix.encoding,
+        })
+        return
+      }
+
+      const { rows, rowCount, dim, totalColumns, skippedFreeText, droppedRows, encoding } = outcome.matrix
 
       try {
-        await postMatrix(rows)
+        await postMatrix(rows, encoding)
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'unknown error'
         console.error(`ingestFile: backend ingest failed: ${errorMessage}`)
@@ -189,22 +237,55 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
         return
       }
 
-      if (droppedColumns > 0 || droppedRows > 0) {
+      // Encoding categoricals is a normal, labeled outcome, not a degradation
+      // — `partial` fires only on genuine information loss (free text
+      // skipped, ragged rows dropped), never merely because encoding happened.
+      if (skippedFreeText > 0 || droppedRows > 0) {
         setDataSourceState({
           status: 'partial',
           filename: file.name,
           rowCount,
           dim,
           totalColumns,
-          droppedColumns,
+          skippedFreeText,
           droppedRows,
+          encoding,
         })
       } else {
-        setDataSourceState({ status: 'loaded', filename: file.name, rowCount, dim })
+        setDataSourceState({ status: 'loaded', filename: file.name, rowCount, dim, encoding })
       }
     },
     [postMatrix],
   )
+
+  const confirmOffer = useCallback(async (): Promise<void> => {
+    const pending = pendingOfferRef.current
+    if (!pending) return
+    const { filename, rows, encoding } = pending
+    pendingOfferRef.current = null
+
+    try {
+      await postMatrix(rows, encoding)
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'unknown error'
+      console.error(`confirmOffer: backend ingest failed: ${errorMessage}`)
+      setDataSourceState({ status: 'error', filename, reason: 'ingest failed · backend unreachable' })
+      return
+    }
+
+    setDataSourceState({
+      status: 'loaded',
+      filename,
+      rowCount: rows.length,
+      dim: encoding.encodedDims,
+      encoding,
+    })
+  }, [postMatrix])
+
+  const dismissOffer = useCallback((): void => {
+    pendingOfferRef.current = null
+    setDataSourceState(IDLE_DATA_SOURCE_STATE)
+  }, [])
 
   // ── Data priority: live stream > REST upload ────────────────────────────
 
@@ -218,6 +299,8 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
     activeFrame,
     streamState,
     ingestFile,
+    confirmOffer,
+    dismissOffer,
     configureStream,
     isLive,
     restFrame,

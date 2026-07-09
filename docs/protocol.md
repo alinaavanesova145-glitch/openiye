@@ -58,6 +58,19 @@ on the LLaMA/Ollama call (see "Decoupling" below).
 | `explanation` | string \| null | **`null` immediately on an anomaly frame** — the LLaMA narrative is generated asynchronously and arrives later as its own `narrative` message. Non-null static string on nominal frames (`"System nominal. ..."`). |
 | `axis_mapping` | object \| null | Reserved for client-side axis remapping; not currently populated by the backend. |
 | `temporal` | object | See `TemporalMetrics` below. Always present, even in `warmup`. |
+| `encoding_summary` | object \| null | Additive (2026-07-12 sprint). `null` for an ordinary numeric-only frame. Present only when the ingested matrix included encoded categorical columns — see below. |
+
+### `encoding_summary`
+
+Echoed back from the ingest **request's own** `encoding_summary` field (`POST /api/canvas/vectors`, `MatrixUploadRequest.encoding_summary` in `backend/app/api/main.py`) — the backend doesn't compute this itself, it only threads through what the frontend's parser (`frontend/src/canvas/upload/parseMatrix.ts`) already determined, and includes it in the anomaly narrative's prompt so the LLaMA text can say the data is encoded categories, not raw measurements. Optional on the request; omitted entirely for a pure-numeric upload (request shape unchanged from before this field existed).
+
+| Field | Type | Notes |
+|---|---|---|
+| `total_columns` | number | Source columns before encoding/skipping. |
+| `numeric_columns` | number | Kept as-is (z-score normalized alongside encoded columns — see `parseMatrix.ts`). |
+| `encoded_categorical_columns` | number | Bounded-cardinality string columns that got one-hot or frequency encoded. |
+| `encoded_dims` | number | Total output dimensions contributed by encoded columns (a one-hot column contributes one dim per category). |
+| `skipped_free_text` | number | Near-unique/unbounded-cardinality string columns dropped entirely — same honest-rejection spirit as before, just column-scoped. |
 
 ### `temporal` (`TemporalMetrics`)
 

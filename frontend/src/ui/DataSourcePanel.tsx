@@ -15,6 +15,7 @@
 import React, { useCallback, useRef, useState } from 'react'
 import {
   formatLoadedMessage,
+  formatOfferMessage,
   formatPartialMessage,
   type DataSourceState,
 } from '@canvas/upload/dataSourceState'
@@ -36,11 +37,20 @@ const COLORS = {
 export interface DataSourcePanelProps {
   state: DataSourceState
   onFile: (file: File) => void
+  /** Confirms a pending `offer` — triggers the actual ingest. No-op if state
+   *  isn't `offer` (caller should only wire this to the visible button). */
+  onConfirmOffer?: () => void
+  /** Dismisses a pending `offer` back to `idle` without ever ingesting. */
+  onDismissOffer?: () => void
 }
 
 // ─── Status region (pure render from state — this is what Phase 2's tests target) ──
 
-const StatusRegion: React.FC<{ state: DataSourceState }> = ({ state }) => {
+const StatusRegion: React.FC<{
+  state: DataSourceState
+  onConfirmOffer?: () => void
+  onDismissOffer?: () => void
+}> = ({ state, onConfirmOffer, onDismissOffer }) => {
   switch (state.status) {
     case 'idle':
       return (
@@ -124,6 +134,69 @@ const StatusRegion: React.FC<{ state: DataSourceState }> = ({ state }) => {
           </div>
         </div>
       )
+
+    case 'offer':
+      // IYE never fabricates geometry from pure-text data without consent —
+      // this state renders the offer, but ingestion only happens on click.
+      return (
+        <div>
+          <Filename name={state.filename} />
+          <div
+            style={{
+              fontSize: 9,
+              color: COLORS.pinkText60,
+              letterSpacing: '0.06em',
+              marginBottom: 12,
+            }}
+          >
+            {formatOfferMessage(state)}
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onConfirmOffer?.()
+              }}
+              style={{
+                fontFamily: 'inherit',
+                fontSize: 9,
+                letterSpacing: '0.06em',
+                textTransform: 'lowercase',
+                color: COLORS.pink,
+                background: COLORS.pinkDim,
+                border: `1px solid ${COLORS.pinkBorder}`,
+                borderRadius: 6,
+                padding: '6px 12px',
+                cursor: 'pointer',
+              }}
+            >
+              encode &amp; visualize
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onDismissOffer?.()
+              }}
+              style={{
+                fontFamily: 'inherit',
+                fontSize: 9,
+                letterSpacing: '0.06em',
+                textTransform: 'lowercase',
+                color: COLORS.textMuted,
+                background: 'transparent',
+                border: `1px solid ${COLORS.pinkBorder}`,
+                borderRadius: 6,
+                padding: '6px 12px',
+                cursor: 'pointer',
+              }}
+            >
+              dismiss
+            </button>
+          </div>
+        </div>
+      )
   }
 }
 
@@ -144,7 +217,12 @@ const Filename: React.FC<{ name: string }> = ({ name }) => (
 
 // ─── Main component ────────────────────────────────────────────────────────────
 
-export const DataSourcePanel: React.FC<DataSourcePanelProps> = ({ state, onFile }) => {
+export const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
+  state,
+  onFile,
+  onConfirmOffer,
+  onDismissOffer,
+}) => {
   const [isDragging, setIsDragging] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -218,7 +296,7 @@ export const DataSourcePanel: React.FC<DataSourcePanelProps> = ({ state, onFile 
           onChange={handleInputChange}
         />
 
-        <StatusRegion state={state} />
+        <StatusRegion state={state} onConfirmOffer={onConfirmOffer} onDismissOffer={onDismissOffer} />
       </div>
     </div>
   )
