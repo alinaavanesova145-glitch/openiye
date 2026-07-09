@@ -319,18 +319,19 @@ export const DiagnosticSidebar: React.FC<DiagnosticSidebarProps> = ({
     <div
       id="iye-diagnostic-sidebar"
       style={{
-        width: '30%',
-        minWidth: 240,
-        maxWidth: 360,
-        height: '100vh',
+        // Sizing (width, min/max clamp, border) is the parent panel's job —
+        // see App.tsx's sidebar wrapper. This box only needs to fill that
+        // parent and provide its own scroll region.
+        width: '100%',
+        flex: 1,
+        minHeight: 0, // lets this flex child actually shrink to enable overflow-y:auto
         background: COLORS.black,
-        borderLeft: `1px solid ${COLORS.divider}`,
         display: 'flex',
         flexDirection: 'column',
         padding: '32px 24px',
         boxSizing: 'border-box',
-        flexShrink: 0,
         overflowY: 'auto',
+        overflowX: 'hidden',
         fontFamily: MONO_FONT,
       }}
     >

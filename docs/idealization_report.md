@@ -847,3 +847,159 @@ All local on `main`, not pushed, per instruction. (Two unrelated commits —
 `b805cfe` local Ollama setup and `3b316a0` the prior sprint's report — sit
 between the last push and this sprint's first commit; not part of this
 sprint's work, left as-is.)
+
+---
+
+# 2026-07-10 — Sidebar layout fixes: 30% width spec + scrollable overflow
+
+Layout-only, one commit. No data-flow/hook/backend changes.
+
+## Root causes
+
+**Bug 1 — sidebar far narrower than 30%.** Two independent, stacked
+mistakes:
+1. `App.tsx`'s outer sidebar wrapper clamped the 30% width to
+   `minWidth: 240, maxWidth: 360` — already tighter than the spec's
+   intended `320`–`480`.
+2. `DiagnosticSidebar.tsx`'s own root `<div>` — nested *inside* that
+   already-clamped wrapper — set its **own** `width: '30%'`. Since it's a
+   flex child of the wrapper, that 30% resolved against the wrapper's
+   already-narrow box (≈360px), not the viewport, producing an inner box
+   roughly 30% × 360px ≈ 108px wide. The dead strip in the bug report was
+   the gap between that ~108px inner box's right edge and the outer
+   wrapper's actual (correctly-positioned) right edge.
+
+**Bug 2 — RENDER LOOP clipped, unreachable.** `DiagnosticSidebar.tsx`'s
+root also set its own `height: '100vh'` while living *below* the
+`DataSourcePanel` in the same column-flex outer wrapper — so total content
+height (`DataSourcePanel`'s box + a full second 100vh box) exceeded the
+wrapper's actual 100vh, and the parent app shell (`#iye-app-root`) has
+`overflow: hidden`. That ancestor-level hard clip is what actually ate the
+bottom of the sidebar — `DiagnosticSidebar`'s own `overflow-y: auto` on the
+same over-tall box never got a chance to matter, since the clipping
+happened one level up, not inside its own box.
+
+## Fix
+
+- `App.tsx`: sidebar wrapper clamp corrected to `min-width: 320px`,
+  `max-width: 480px` (still `width: 30%` in between); added
+  `overflow: hidden` on this wrapper so it stays a fixed-height flex
+  column and never itself grows past `100vh`.
+- `DiagnosticSidebar.tsx`: removed its own `width`/`min-width`/`max-width`
+  and redundant `border-left` entirely — sizing and the visual boundary
+  are the parent wrapper's job alone now. Changed `height: 100vh` →
+  `flex: 1` (fills whatever vertical space the wrapper has left after
+  `DataSourcePanel`) plus `min-height: 0` — the standard flexbox-scroll fix:
+  a flex item's default `min-height: auto` lets it grow to fit its content
+  regardless of the flex container's size, which is exactly what was
+  defeating `overflow-y: auto` before. Added explicit `overflow-x: hidden`
+  alongside the existing `overflow-y: auto`.
+- Scrollbar: kept the existing hairline-blush-thumb approach (already
+  established in `GlobalStyles`) over fully-hidden, since the sidebar has
+  no other affordance signaling "more content below" once RENDER LOOP
+  scrolls out of view — a hidden scrollbar would make the cut-content bug
+  merely invisible instead of fixed. Tightened values to spec exactly:
+  3px width (was 4px), `rgba(255,182,193,0.25)` thumb (was 0.2), explicit
+  `::-webkit-scrollbar-button { display: none }`, and added
+  `scrollbar-width: thin` / `scrollbar-color` for Firefox parity — no new
+  color introduced, reusing the existing blush rgba value.
+
+## Verification
+
+Live Playwright drive against the running stack at three widths (full-page
+screenshots in `docs/screenshots/2026-07-10-sidebar-layout/`):
+
+| Width | Sidebar box | Canvas box | Right edge flush? |
+|---|---|---|---|
+| 1280 | `x=897, width=383` (expected ≈384) | `width=896` | yes (897+383=1280) |
+| 1680 | `x=1201, width=479` (clamped to 480) | `width=1200` | yes (1201+479=1680) |
+| 2560 | `x=2081, width=479` (clamped to 480) | `width=2080` | yes (2081+479=2560) |
+
+[`width-1280.png`](screenshots/2026-07-10-sidebar-layout/width-1280.png),
+[`width-1680.png`](screenshots/2026-07-10-sidebar-layout/width-1680.png),
+[`width-2560.png`](screenshots/2026-07-10-sidebar-layout/width-2560.png) —
+all three show the sidebar filling its clamped share with no dead strip,
+and `SYSTEM NOTES` card text unwrapped (the "pipeline" card in particular
+was tightly wrapped before, now reads on 1–2 clean lines at every width).
+
+**Scroll fix, forced under a genuine overflow** (620px viewport height, not
+just the incidental case where content already fit): confirmed
+`sidebar.scrollHeight (591) > sidebar.clientHeight (428)` before scrolling,
+i.e. a real overflow, not a coincidence. After
+`el.scrollTop = el.scrollHeight`, RENDER LOOP's bounding box
+(`y=461.75, height=13.5`) sits fully inside the 620px viewport — verified
+both by screenshot and the programmatic bounds check requested.
+[`scroll-before.png`](screenshots/2026-07-10-sidebar-layout/scroll-before.png)
+shows RENDER LOOP clipped at the bottom edge (the reported bug, reproduced);
+[`scroll-after.png`](screenshots/2026-07-10-sidebar-layout/scroll-after.png)
+shows it fully visible with the `canvas · rendering` footer below it, after
+scrolling the sidebar's own container (not `body`).
+
+**Canvas resize path — verified, not assumed.** `VectorViewport.tsx`'s
+`<Canvas camera={{ position: [3, 3, 5] }}>` has no hardcoded width/height —
+R3F sizes it to its parent (`ViewportPanel`, `flex: 1`) via its own
+`ResizeObserver`, unmodified by this sprint. Confirmed live: after a
+**live** resize (same page, no reload) from 1280→1680, the `<canvas>`
+element's own bounding box became exactly `{width: 1200, height: 900}` —
+precisely the container's `1680 - 480` remainder, with no rounding drift.
+[`canvas-after-live-resize.png`](screenshots/2026-07-10-sidebar-layout/canvas-after-live-resize.png)
+shows the wireframe reference cube proportionally identical to its
+appearance at the other two widths — no stretching or letterboxing at any
+tested size.
+
+**Hover-tooltip positioning — partially verified, gap stated honestly.**
+The tooltip's own code (`<Html position={[0, 1.8, 0]} center distanceFactor={9}>`
+in `VectorViewport.tsx`) was not touched by this sprint, and its correctness
+depends entirely on R3F's camera aspect ratio being derived from the
+correct canvas size — which the measurement above confirms directly.
+However, an automated Playwright hover specifically *landing* on a
+beacon's few-pixel hit target was not achieved this pass: three
+approaches were tried (a coarse full-canvas grid scan, a finer grid scan,
+and precise coordinates read off an earlier screenshot) without a hit,
+`buildMockFrame`'s point positions are randomized per page load
+(`Math.random()` jitter), so coordinates read from one screenshot don't
+transfer to a later page instance. This is the same category of
+hard-to-force pixel/timing target flagged as an honest gap in the prior
+sprint's Suspense-fallback verification — not a sign the tooltip is broken,
+just that this specific interaction wasn't captured pixel-by-pixel
+automatically.
+
+**Unrelated pre-existing issue found, explicitly out of scope, not
+touched.** While chasing the hover target using a real CSV upload (the
+demo fixture from the prior sprint), the uploaded dataset's point
+cloud/cluster hulls/beacons did not render at all — only the static
+reference wireframe box was visible, despite the sidebar correctly
+reporting `points: 200`, `status: ANOMALY`, and the right cluster/anomaly
+counts. **Confirmed via `git stash` that this reproduces identically on
+the pre-fix code** — it is not a regression introduced by this sprint's
+CSS changes. Per this sprint's explicit scope boundary ("if you find
+yourself editing... any canvas child's logic... stop"), this was not
+investigated further or fixed here; flagged for a future pass. The
+default mock frame (150 points, used for the width/canvas-resize
+verification above) renders normally and was unaffected.
+
+## Full verification
+
+| Check | Result |
+|---|---|
+| `pytest tests/` (backend, untouched, run to prove it) | 27 passed |
+| `ruff check .` (backend) | All checks passed |
+| `tsc --noEmit` (frontend) | clean |
+| `eslint . --max-warnings 0` (frontend) | clean |
+| `vitest run` (frontend) | 69 passed, no assertions needed updating — no existing test asserted sidebar width/height/overflow geometry |
+| `vite build` (frontend) | clean, 0 warnings |
+
+## Files touched
+
+`frontend/src/App.tsx` (sidebar wrapper clamp + overflow, scrollbar CSS),
+`frontend/src/ui/DiagnosticSidebar.tsx` (removed redundant width/height/border,
+flex + min-height fix), `docs/screenshots/2026-07-10-sidebar-layout/*.png`
+(new, verification evidence), `docs/idealization_report.md` (this section).
+
+## Commit
+
+```
+fix: sidebar honors 30% panel spec with clamped width + scrollable overflow
+```
+
+Local on `main`, not pushed, per instruction.

@@ -105,9 +105,15 @@ const GlobalStyles: React.FC = () => (
       -webkit-font-smoothing: antialiased;
     }
 
-    ::-webkit-scrollbar { width: 4px; }
+    /* Hairline blush scrollbar — never a default gray OS scrollbar on the
+       black field. Chosen over fully-hidden because the sidebar has no
+       other affordance signaling "more content below" once RENDER LOOP
+       scrolls out of view. */
+    * { scrollbar-width: thin; scrollbar-color: rgba(255,182,193,0.25) transparent; }
+    ::-webkit-scrollbar { width: 3px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: rgba(255,182,193,0.2); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,182,193,0.25); border-radius: 3px; }
+    ::-webkit-scrollbar-button { display: none; height: 0; width: 0; }
 
     @keyframes iye-pulse {
       0%, 100% { opacity: 1; box-shadow: 0 0 8px #ffb6c1; }
@@ -146,18 +152,19 @@ const App: React.FC = () => {
         {/* Left: 3D Vector Viewport (70%) */}
         <ViewportPanel />
 
-        {/* Right: Diagnostic Sidebar (30%) */}
+        {/* Right: Diagnostic Sidebar (30%, clamped 320-480px) */}
         <div
           style={{
             width: '30%',
-            minWidth: 240,
-            maxWidth: 360,
+            minWidth: 320,
+            maxWidth: 480,
             height: '100vh',
             display: 'flex',
             flexDirection: 'column',
             background: COLORS.black,
             borderLeft: `1px solid ${COLORS.divider}`,
             flexShrink: 0,
+            overflow: 'hidden',
           }}
         >
           {/* File drop zone sits above the diagnostic panel */}
