@@ -716,6 +716,7 @@ via `python3 tools/make_demo_fixture.py`).
 | Phase 2 — mixed CSV → `partial` with correct counts | **PASS** — `DataSourcePanel.test.tsx`: `loaded 4 of 6 columns · 2 non-numeric skipped` for a 2-non-numeric-column fixture |
 | Phase 3 — backend test: batch upload with outlier → anomaly frame → narrative | **PASS** — `test_e2e_upload_narrative.py` (27th backend test), real uvicorn subprocess + stubbed Ollama, reused `conftest.py` fixtures |
 | Phase 3 — manual: drop CSV → beacons → `analyzing…` → narrative in tooltip + terminal | **PASS** (with one honest gap, see below) |
+| Phase 4 — demo fixture reliably triggers `ANOMALY` through the real pipeline | **PASS** — `demo/sample_telemetry.csv` (the actual committed, 4-decimal-rounded file, not just the in-memory data) fed through `iye.reduce_to_3d`/`cluster`/`detect_anomalies` directly: `anomaly_indices: [197, 198, 199]` |
 
 **Phase 3 manual gate, in detail.** Live Playwright drive against the running
 app with a *real* Ollama (llama3, installed this environment per an earlier
@@ -767,4 +768,82 @@ triggers (confirmed 3 consecutive identical runs). This is a pre-existing
 property of `sdk/iye/__init__.py`, untouched this sprint — noted here so the
 Phase 4 demo fixture's parameters aren't mistaken for arbitrary.
 
-(Filled in below as each phase completes verification.)
+## Full verification, this sprint's final state
+
+| Check | Result |
+|---|---|
+| `pytest tests/` (backend, includes both new e2e tests) | 27 passed |
+| `ruff check .` (backend) | All checks passed |
+| `tsc --noEmit` (frontend) | clean |
+| `eslint . --max-warnings 0` (frontend) | clean |
+| `vitest run` (frontend) | 69 passed |
+| `vite build` (frontend) | clean, 0 warnings |
+| Manual: live Playwright — `package.json` → `rejected`, previous scene untouched | confirmed |
+| Manual: live Playwright — valid CSV with outliers → scene rebuild + `ANOMALY` + narrative | confirmed |
+| Manual: `demo/sample_telemetry.csv` → deterministic `ANOMALY` via direct pipeline call | confirmed |
+
+## Files touched this sprint
+
+**Created**: `frontend/src/canvas/upload/parseMatrix.ts` (+ test),
+`frontend/src/canvas/upload/dataSourceState.ts`,
+`frontend/src/ui/DataSourcePanel.tsx` (+ test), `backend/tests/conftest.py`,
+`backend/tests/test_e2e_upload_narrative.py`, `demo/sample_telemetry.csv`,
+`tools/make_demo_fixture.py`.
+
+**Modified**: `frontend/src/App.tsx` (old inline `FileDropZone` removed,
+replaced by `DataSourcePanel`), `frontend/src/canvas/math/useVectorDiagnostics.ts`
+(`processVectors` → `postMatrix` + `ingestFile`; added `llmStatus` +
+`narrativeResolutionKey` refresh), `frontend/src/ui/DiagnosticSidebar.tsx`
+(+test) (`llm` indicator), `frontend/src/test/setup.ts` (jsdom
+`Blob.text`/`arrayBuffer` polyfill), `backend/app/api/main.py`
+(`MatrixUploadRequest.data` made optional; `_llm_status` +
+`_startup_llm_healthcheck`; `/api/health` gets `llm`),
+`backend/tests/test_e2e_narrative.py` (fixtures extracted to `conftest.py`),
+`docs/protocol.md` (new `/api/health` REST section), `README.md` (local LLM
+setup section from the prior task, plus the demo-fixture two-liner this
+sprint).
+
+## Remaining known gaps (deliberately not touched, and why)
+
+1. **Two independent WebSocket connections per page load** (`VectorViewport.tsx`'s
+   own `useVectorStream()` call, separate from `useVectorDiagnostics`'s
+   internal one) — found while tracing Phase 0, both receive the same
+   broadcasts so it isn't a correctness bug, just wasted duplication.
+   Untouched per "no rewrites of working code" — a real consolidation
+   candidate for a future pass, not this one.
+2. **The hover-triggered 3D beacon tooltip's transient `analyzing…` state
+   wasn't captured in an automated screenshot** (Phase 3) — same category of
+   hard-to-force pixel/timing target as the prior sprint's Suspense-fallback
+   gap. The underlying display logic (`resolveExplanationDisplay`) is
+   unit-tested and the terminal panel (same function, always-visible) was
+   confirmed live; only the specific hover-mount pixel capture is unproven.
+3. **CSV parsing is comma-split, not full RFC 4180** — no quoted-field or
+   embedded-comma support. Fine for the numeric-only inputs this pipeline
+   targets (quoted fields would only ever contain non-numeric data, which
+   gets dropped as a non-numeric column anyway), but worth naming so it
+   isn't assumed to be a general-purpose CSV parser.
+4. **The Z-score anomaly check's sensitivity to sample size/random draw**
+   (documented above) is a pre-existing property of `sdk/iye/__init__.py`,
+   not something this sprint touched or was asked to fix — flagged because
+   it directly shaped the demo fixture's parameters and is worth knowing
+   before anyone tunes "outlier magnitude" expecting a simple monotonic
+   relationship with detection.
+5. **`MatrixUploadRequest.data` relaxation was reactive, not planned** — found
+   via the Phase 1 live gate, not anticipated in the brief. Backward-compatible
+   and narrow (one field, one line), but worth an explicit callout since it's
+   the one schema change in a sprint that otherwise touched no detection code.
+
+## Commits ready for review
+
+```
+b9011b5 docs: current upload path trace
+718691b feat: file uploads flow through full detection + narrative pipeline
+e85dea8 feat: explicit data-source states — no more silent upload failures
+11479f5 feat: narratives for uploaded data + llm status indicator
+96a7484 feat: seeded demo fixture + generator script
+```
+
+All local on `main`, not pushed, per instruction. (Two unrelated commits —
+`b805cfe` local Ollama setup and `3b316a0` the prior sprint's report — sit
+between the last push and this sprint's first commit; not part of this
+sprint's work, left as-is.)
