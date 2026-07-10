@@ -16,6 +16,7 @@ import {
   type StreamConfig,
 } from './useVectorStream'
 import { parseFile, detectFormat, MAX_UPLOAD_BYTES, type EncodingSummary } from '@canvas/upload/parseMatrix'
+import { API_BASE } from '@lib/apiConfig'
 import {
   IDLE_DATA_SOURCE_STATE,
   NETWORK_ERROR_MESSAGE,
@@ -153,28 +154,24 @@ export interface VectorDiagnosticsResult {
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useVectorDiagnostics(): VectorDiagnosticsResult {
-  const { streamState, liveFrame, configureStream, activePort } = useVectorStream()
+  const { streamState, liveFrame, configureStream } = useVectorStream()
 
   const [restFrame, setRestFrame] = useState<VectorFrame | null>(null)
   const [dataSourceState, setDataSourceState] = useState<DataSourceState>(IDLE_DATA_SOURCE_STATE)
   const [llmStatus, setLlmStatus] = useState<LlmStatus>('unknown')
 
-  const refreshLlmStatus = useCallback(
-    (signal?: { cancelled: boolean }) => {
-      fetch(`http://127.0.0.1:${String(activePort)}/api/health`)
-        .then((res) => res.json())
-        .then((body: unknown) => {
-          if (signal?.cancelled) return
-          const status =
-            typeof body === 'object' && body !== null && (body as Record<string, unknown>).llm
-          setLlmStatus(status === 'ready' || status === 'offline' ? status : 'unknown')
-        })
-        .catch(() => {
-          if (!signal?.cancelled) setLlmStatus('unknown')
-        })
-    },
-    [activePort],
-  )
+  const refreshLlmStatus = useCallback((signal?: { cancelled: boolean }) => {
+    fetch(`${API_BASE}/api/health`)
+      .then((res) => res.json())
+      .then((body: unknown) => {
+        if (signal?.cancelled) return
+        const status = typeof body === 'object' && body !== null && (body as Record<string, unknown>).llm
+        setLlmStatus(status === 'ready' || status === 'offline' ? status : 'unknown')
+      })
+      .catch(() => {
+        if (!signal?.cancelled) setLlmStatus('unknown')
+      })
+  }, [])
 
   // Checked once at mount, and again — event-driven, not on a timer — every
   // time an anomaly frame's explanation actually resolves (real or
@@ -218,7 +215,7 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
       if (encoding && encoding.encodedCategoricalColumns > 0) {
         body.encoding_summary = toWireEncodingSummary(encoding)
       }
-      const response = await fetch(`http://127.0.0.1:${String(activePort)}/api/canvas/vectors`, {
+      const response = await fetch(`${API_BASE}/api/canvas/vectors`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -245,7 +242,7 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
         setRestFrame(normalized)
       }
     },
-    [activePort],
+    [],
   )
 
   // ── File ingestion orchestration: size cap → parse → ingest ─────────────

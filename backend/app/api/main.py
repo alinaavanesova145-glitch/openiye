@@ -122,9 +122,28 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# DEV-ONLY CORS. Matches the Vite dev server (port 3000) on localhost, its
+# loopback IP, and the RFC 1918 private-LAN ranges (10.0.0.0/8,
+# 172.16.0.0/12, 192.168.0.0/16) — see docs/idealization_report.md,
+# 2026-07-14 sprint, Phase 2: the app used to be unreachable from any
+# machine that opened it via the host's LAN IP instead of localhost.
+# A real deployment must replace this regex with an explicit origin
+# allowlist (`allow_origins=[...]`, no regex, no private-IP ranges) —
+# this permissive pattern is only appropriate because dev machines on a
+# private LAN are the only realistic caller during local development.
+DEV_CORS_ORIGIN_REGEX = (
+    r"^https?://("
+    r"localhost"
+    r"|127\.0\.0\.1"
+    r"|10(?:\.\d{1,3}){3}"
+    r"|172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2}"
+    r"|192\.168(?:\.\d{1,3}){2}"
+    r"):3000$"
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],        # Permit local Vite dev server on any port
+    allow_origin_regex=DEV_CORS_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

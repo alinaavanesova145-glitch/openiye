@@ -1,12 +1,14 @@
 /**
- * useVectorStream — Persistent WebSocket hook for live IYE vector frame streaming
- * with automated multi-port fallbacks to handle macOS host conflicts.
+ * useVectorStream — Persistent WebSocket hook for live IYE vector frame streaming.
  *
- * Connects directly to the explicit local backend pipeline instance at ws://127.0.0.1:8050/stream.
+ * Connects to `${WS_BASE}/stream` — WS_BASE is derived from the page's own
+ * host (see @lib/apiConfig), so this works identically over localhost or a
+ * LAN IP. Do not hardcode a host/port literal here; add it to apiConfig.ts.
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { MutableRefObject } from 'react'
+import { WS_BASE } from '@lib/apiConfig'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -88,7 +90,6 @@ export interface VectorStreamResult {
   positions: Float32Array
   anomalyIndices: number[]
   configureStream: (config: StreamConfig) => void
-  activePort: number
   /**
    * Latest temporal metrics, updated by direct mutation (no re-render).
    * Read this inside useFrame for beacon pulse animation — subscribing to
@@ -135,7 +136,6 @@ function parseTemporalMetrics(raw: unknown): TemporalMetrics {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const PORTS = [8050, 8000, 8222]
 const BASE_BACKOFF_MS = 1000
 const MAX_BACKOFF_MS = 30000
 const JITTER_FACTOR = 0.3
@@ -263,7 +263,6 @@ export function useVectorStream(): VectorStreamResult {
   const [liveFrame, setLiveFrame] = useState<VectorFrame | null>(null)
   const [positions, setPositions] = useState<Float32Array>(() => new Float32Array(0))
   const [anomalyIndices, setAnomalyIndices] = useState<number[]>([])
-  const [activePort, setActivePort] = useState<number>(PORTS[0])
   const [narrativeHistory, setNarrativeHistory] = useState<NarrativeHistoryEntry[]>([])
 
   const wsRef = useRef<WebSocket | null>(null)
@@ -306,8 +305,10 @@ export function useVectorStream(): VectorStreamResult {
 
     setStreamState('connecting')
 
-    // Bypassing proxy definitions: pointing directly to the known running FastAPI layer
-    const wsUrl = 'ws://127.0.0.1:8050/stream'
+    // Bypassing proxy definitions: pointing directly at the known running
+    // FastAPI layer, host-derived (see @lib/apiConfig) so this resolves
+    // correctly over a LAN IP, not just localhost.
+    const wsUrl = `${WS_BASE}/stream`
 
     try {
       const ws = new WebSocket(wsUrl)
@@ -318,7 +319,6 @@ export function useVectorStream(): VectorStreamResult {
         setStreamState('connected')
         wasConnectedRef.current = true
         backoffRef.current = 0
-        setActivePort(8050)
       }
 
       ws.onmessage = (event: MessageEvent) => {
@@ -579,7 +579,6 @@ export function useVectorStream(): VectorStreamResult {
     positions,
     anomalyIndices,
     configureStream,
-    activePort,
     temporalRef,
     narrativeHistory,
   }

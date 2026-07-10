@@ -18,10 +18,15 @@ else
   echo "llm offline — narratives will use fallback text"
 fi
 
-echo "Starting IYE backend on :8050..."
+echo "Starting IYE backend on :8050 (all interfaces, so LAN access works)..."
 (
   cd "$ROOT_DIR"
-  PYTHONPATH=./backend "$ROOT_DIR/backend/.venv/bin/uvicorn" app.api.main:app --host 127.0.0.1 --port 8050 --reload
+  # 0.0.0.0, not 127.0.0.1: the frontend's own host-derived addressing
+  # (frontend/src/lib/apiConfig.ts) lets a LAN device reach this backend at
+  # the host machine's LAN IP — but only if the backend is actually
+  # listening on that interface, not just loopback. See
+  # docs/idealization_report.md, 2026-07-14 sprint, Phase 2.
+  PYTHONPATH=./backend "$ROOT_DIR/backend/.venv/bin/uvicorn" app.api.main:app --host 0.0.0.0 --port 8050 --reload
 ) &
 BACKEND_PID=$!
 
