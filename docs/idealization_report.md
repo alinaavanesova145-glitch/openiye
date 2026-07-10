@@ -1315,3 +1315,254 @@ be746fc feat: categorical encoding — automatic for mixed data, opt-in for pure
 sprint's `f48d740`; nothing to commit.)
 
 All local on `main`, not pushed, per instruction.
+
+---
+
+# 2026-07-14 — Sprint: error taxonomy + LAN access (Phases 3–5 pre-verified done)
+
+Master prompt covered five phases. Before writing any code, checked git log
+and this report against Phases 3 (categorical encoding), 4 (sidebar width),
+5 (sidebar scroll): all three were already shipped and verified in the two
+immediately preceding sprints (`be746fc`, `f48d740`, re-audited again in
+`050c12b`). Nothing to redo — see those sections above for the full
+detail. This sprint's actual work is Phases 1–2.
+
+## Phase 1 — Error taxonomy
+
+### Root cause, found by live reproduction, not assumed
+
+The brief's repro (`gemini-code-*.json` surfacing the validation-rejection
+message while the backend was unreachable) was reproduced exactly — and
+turned out to be a **correct** classification, not a bug. A file shaped
+like a real Gemini/LLM chat export is a bare JSON object (`{"model": ...,
+"response": {...}}`), not an array. `parseJsonMatrix`'s very first check
+(`!Array.isArray(parsed)`) rejects it **before any network call is ever
+made** — confirmed via Playwright with `page.on('requestfailed')` logging:
+zero requests to `/api/canvas/vectors` fired for this file, whether the
+backend was up or down. Re-tested explicitly: the identical message appears
+whether the backend is reachable or not, which is the correct behavior for
+a purely client-side content decision.
+
+The **real** conflation was one level deeper, in `useVectorDiagnostics.ts`'s
+`postMatrix`/`ingestFile`:
+
+```ts
+if (!response.ok) {
+  throw new Error(`REST upload failed: ${status}`)   // reached, rejected
+}
+// ...
+} catch (err) {
+  setDataSourceState({ status: 'error', reason: 'ingest failed · backend unreachable' })
+  // ^ same message for a genuine fetch()-level TypeError (never reached
+  //   the backend at all) and the throw above (reached, backend said no)
+}
+```
+
+`fetch()` itself throws `TypeError` for transport-level failures (DNS,
+connection refused, CORS block) — this is standard Fetch API behavior, not
+something IYE's code decides. The single `catch` block treated a
+transport-level `TypeError` and a deliberate `throw new Error(...)` for a
+non-2xx HTTP response identically, always rendering "backend unreachable" —
+accurate wording for the first case, actively misleading for the second
+(the backend *was* reached; it just rejected the payload).
+
+### Fix
+
+- `postMatrix` now throws a distinguishable `ServerIngestError` (carries
+  the HTTP status) instead of a plain `Error` for non-2xx responses.
+- `classifyIngestFailure(err)` checks `err instanceof TypeError` first
+  (transport-level → `network_error`) before falling back to `error`
+  (reached, rejected) — see `useVectorDiagnostics.ts`.
+- New additive `network_error` state (`dataSourceState.ts`), fixed copy
+  `backend unreachable · verify api on port 8050 · retry`, with a
+  functional retry button (not just descriptive text) wired to a new
+  `retryIngest()` — re-attempts the same already-parsed file without
+  requiring re-selection, via a `pendingRetryRef` populated only on
+  `network_error`.
+- `error`'s meaning was **narrowed**, not left ambiguous: it now
+  specifically means "reached, backend rejected" and its message includes
+  the actual HTTP status (`ingest failed · server rejected the request
+  (status 500)`), never the word "unreachable".
+- `rejected` (content-validation) is untouched — confirmed via a dedicated
+  test that it never calls `fetch` at all.
+
+### Tests
+
+`useVectorDiagnostics.test.ts` (new, 6 tests): mocked `fetch` rejecting with
+`TypeError` → `network_error`, never `rejected`/`error`; mocked 500 →
+`error` with the status in the message, never "unreachable"; mocked 200 →
+`loaded`; content-rejection (package.json-shaped) → `fetch` asserted never
+called; `retryIngest` re-attempts and succeeds once the mock is flipped to
+succeed; `retryIngest` is a no-op with nothing pending.
+`DataSourcePanel.test.tsx`: new `network_error` rendering + retry-click
+tests; the pre-existing `error`-state test's fixture was stale under the
+new semantics — quoted below.
+
+**Existing test changed, quoted per directive #2**: `'renders the error
+state distinctly from rejected'` — BEFORE: `reason: 'ingest failed ·
+backend unreachable'` (the old, now-wrong-for-`error` wording). AFTER:
+`reason: 'ingest failed · server rejected the request (status 500)'`,
+renamed `'renders the error state (server-side rejection) distinctly from
+rejected'`. Reason: `error`'s meaning changed (see above); the old fixture
+text now describes what `network_error` means, not what `error` means.
+
+### Gate
+
+Live Playwright: backend stopped → drop `clean.csv` →
+`"backend unreachable · verify api on port 8050 · retry"` (screenshot
+[`1-network-error.png`](screenshots/2026-07-14-network-error/1-network-error.png)).
+Backend started → click "retry" (same file, never re-selected) →
+`"3 rows · 3 dims · clustered"`
+([`2-retry-succeeded.png`](screenshots/2026-07-14-network-error/2-retry-succeeded.png)),
+zero new console errors after the backend came up.
+
+## Phase 2 — LAN-aware backend addressing
+
+### The full root cause had three parts, not one
+
+1. **Frontend hardcoded `127.0.0.1`** in three places (`useVectorStream.ts`'s
+   WS URL, `useVectorDiagnostics.ts`'s `/api/health` and
+   `/api/canvas/vectors` fetches). `127.0.0.1` always means "this device's
+   own loopback" — a LAN device opening the Vite dev server's LAN URL has
+   its *own* browser resolve `127.0.0.1` to *itself*, not the host machine,
+   regardless of whether the real backend was reachable over the network.
+2. **Backend CORS was `allow_origins=["*"]` + `allow_credentials=True`** —
+   a combination browsers don't straightforwardly honor for credentialed
+   requests, and not scoped to any real notion of "trusted origin" even
+   where it did work.
+3. **`boot.sh` bound the backend to `--host 127.0.0.1`** — found while
+   setting up the live LAN gate, not anticipated in the plan. Even with
+   (1) and (2) fixed, the backend literally wasn't listening on the LAN
+   network interface at all — a LAN device's request would hit
+   `ERR_CONNECTION_REFUSED` regardless of addressing or CORS correctness.
+   All three had to be fixed together for LAN access to actually work;
+   fixing only the first two would have looked correct in code review and
+   still failed live.
+
+### Fix
+
+- New `frontend/src/lib/apiConfig.ts` — single source of truth. `API_BASE`/
+  `WS_BASE` derived from `window.location.protocol`/`.hostname` (mirrors
+  the page's own host, whatever it is), computed once at module load.
+  `VITE_API_BASE`/`VITE_WS_BASE` env vars override when set. The
+  host-derivation core (`computeApiBase`/`computeWsBase`) is exported as
+  pure functions taking explicit args — trivially unit-testable without
+  mocking `window.location` or forcing module re-evaluation; the thin
+  `import.meta.env`/`window`-reading wrapper around them is not itself
+  unit tested (same "prove the pure core, document the env-coupled
+  boundary" pattern used elsewhere in this codebase, e.g. the Suspense/memo
+  tests from earlier sprints).
+- `useVectorStream.ts` and `useVectorDiagnostics.ts` now import `WS_BASE`/
+  `API_BASE` instead of hardcoding literals. `grep -rn "127\.0\.0\.1:8050\|
+  localhost:8050" frontend/src` (excluding `.test.` files) now matches only
+  `apiConfig.ts` itself (its own SSR-fallback default and doc comments) —
+  confirmed, not asserted.
+- `activePort`/`PORTS` (a `useVectorStream.ts` state pair that never
+  actually implemented the multi-port fallback its own docstring claimed —
+  the WS URL was hardcoded regardless of `PORTS[1]`/`PORTS[2]`) removed.
+  This was dead code made fully dead by this change (its only consumers
+  were the exact literal-URL call sites just replaced); left in place would
+  have been unused state pretending to matter. Confirmed no other consumer
+  via grep before removing.
+- Backend CORS: `allow_origins=["*"]` replaced with
+  `allow_origin_regex=DEV_CORS_ORIGIN_REGEX` matching `localhost`,
+  `127.0.0.1`, and the three RFC 1918 private-LAN ranges (`10.0.0.0/8`,
+  `172.16.0.0/12`, `192.168.0.0/16`) on port 3000 specifically — not a
+  blanket wildcard. Comment explicitly marks this dev-only and states what
+  a production deployment must do instead (explicit `allow_origins`
+  allowlist, no regex, no private-IP ranges).
+- `boot.sh`: backend now starts with `--host 0.0.0.0` instead of
+  `--host 127.0.0.1`, with a comment explaining why (frontend addressing
+  alone is necessary but not sufficient — the backend has to actually be
+  listening on the interface a LAN device can reach).
+
+### Tests
+
+`apiConfig.test.ts` (new, 6 tests): localhost, LAN IP (`192.168.1.4`),
+loopback IP, https→wss mirroring — all via the pure `computeApiBase`/
+`computeWsBase` functions.
+`test_cors_lan_access.py` (new, 8 tests): `TestClient` requests with
+explicit `Origin` headers — localhost:3000 allowed, 127.0.0.1:3000 allowed,
+192.168.1.4:3000 allowed, 10.0.0.5:3000 allowed, 172.20.0.5:3000 allowed
+(inside 172.16.0.0/12), **172.32.0.5:3000 rejected** (just outside the
+172.16–31 range — proves the regex's boundary is exact, not just "starts
+with 172."), wrong port rejected, a public-internet origin rejected.
+
+### Gate — live, on the machine's real LAN IP (192.168.1.100)
+
+`./boot.sh` (with the `--host 0.0.0.0` fix), then Playwright opened
+`http://192.168.1.100:3000` (not localhost):
+- WS connected via the LAN IP — `STREAM: connected` in the canvas header.
+  ([`1-lan-connected.png`](screenshots/2026-07-14-lan-access/1-lan-connected.png))
+- Dropped a CSV with a planted outlier over that LAN session → ingested
+  (`"16 rows · 3 dims · clustered"`), `status: ANOMALY`, narrative arrived
+  in both the terminal panel and sidebar `ANALYSIS` block (fallback text —
+  the same known ~15-22s-generation-vs-10s-timeout hardware limitation
+  documented in the local-Ollama-setup session, unrelated to this sprint).
+  Zero console errors.
+  ([`2-lan-ingest-narrative.png`](screenshots/2026-07-14-lan-access/2-lan-ingest-narrative.png))
+- Regression check: plain `http://localhost:3000` re-verified working
+  end-to-end afterward (WS connect + ingest), confirming the host-derived
+  addressing didn't regress the common case.
+  ([`3-localhost-still-works.png`](screenshots/2026-07-14-lan-access/3-localhost-still-works.png))
+
+## Full verification
+
+| Check | Result |
+|---|---|
+| `pytest tests/` (backend) | 39 passed (31 → 39: `test_encoding_summary.py` unaffected, `test_cors_lan_access.py` +8) |
+| `ruff check .` (backend) | All checks passed |
+| `tsc --noEmit` (frontend) | clean |
+| `eslint . --max-warnings 0` (frontend) | clean |
+| `vitest run` (frontend) | 97 passed (91 → 97: `apiConfig.test.ts` +6) |
+| `vite build` (frontend) | clean, 0 warnings |
+
+## Files touched this sprint
+
+**Created**: `frontend/src/lib/apiConfig.ts` (+test), `frontend/src/vite-env.d.ts`,
+`frontend/src/canvas/math/useVectorDiagnostics.test.ts`,
+`backend/tests/test_cors_lan_access.py`,
+`docs/screenshots/2026-07-14-network-error/*.png`,
+`docs/screenshots/2026-07-14-lan-access/*.png`.
+
+**Modified**: `frontend/src/canvas/upload/dataSourceState.ts` (`network_error`
+state, `NETWORK_ERROR_MESSAGE`), `frontend/src/canvas/math/useVectorDiagnostics.ts`
+(`ServerIngestError`, `classifyIngestFailure`, `settleDataSourceState`,
+`retryIngest`, `API_BASE` wiring), `frontend/src/canvas/math/useVectorStream.ts`
+(`WS_BASE` wiring, removed dead `PORTS`/`activePort`), `frontend/src/ui/DataSourcePanel.tsx`
+(+test — `network_error` rendering, shared `PanelButton`), `frontend/src/App.tsx`
+(wired `retryIngest`), `backend/app/api/main.py` (`DEV_CORS_ORIGIN_REGEX`),
+`boot.sh` (`--host 0.0.0.0`).
+
+## Remaining known gaps (deliberately not touched, and why)
+
+1. **`activePort`'s removal is a small behavior-adjacent cleanup, not
+   requested explicitly** — justified above as a direct, unavoidable
+   consequence of removing the hardcoded URLs it existed to interpolate
+   into, not scope creep; flagged here for visibility rather than buried.
+2. **The dev CORS regex is intentionally permissive within its scope**
+   (any `192.168.x.x`/`10.x.x.x`/`172.16-31.x.x` on port 3000) — correct
+   for a dev machine on a private LAN, explicitly wrong for production;
+   the comment states this, but there is no *enforced* boundary (e.g. an
+   environment-variable-gated switch to a strict allowlist) preventing this
+   config from being deployed as-is. Out of scope for this sprint (no
+   production deployment topology exists yet to design that switch
+   against).
+3. **The unrelated upload-rendering gap** (point cloud/beacons not visually
+   rendering for some uploaded datasets, sidebar counts still correct),
+   first flagged in the 2026-07-10 sprint, confirmed still present in the
+   2026-07-12 sprint, **not re-investigated this sprint** — out of scope
+   for error taxonomy / LAN addressing, flagged again so it isn't lost.
+4. **HTTPS/WSS was not live-tested** — `apiConfig.ts`'s protocol-mirroring
+   (`https:` page → `wss:` backend) is covered by a unit test
+   (`computeWsBase`'s https→wss case) but not exercised against a real
+   TLS-terminated deployment, since none exists in this dev setup.
+
+## Commits ready for review
+
+```
+038100c fix: network failures surface as network_error, never as data validation rejection
+0917be9 fix: host-derived api/ws addressing + dev cors for lan access
+```
+
+All local on `main`, not pushed, per instruction.
