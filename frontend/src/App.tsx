@@ -131,6 +131,7 @@ const App: React.FC = () => {
     ingestFile,
     confirmOffer,
     dismissOffer,
+    retryIngest,
     isLive,
     dataSourceState,
     llmStatus,
@@ -146,6 +147,10 @@ const App: React.FC = () => {
   const handleConfirmOffer = useCallback(() => {
     void confirmOffer()
   }, [confirmOffer])
+
+  const handleRetry = useCallback(() => {
+    void retryIngest()
+  }, [retryIngest])
 
   return (
     <>
@@ -186,6 +191,7 @@ const App: React.FC = () => {
               onFile={handleFile}
               onConfirmOffer={handleConfirmOffer}
               onDismissOffer={dismissOffer}
+              onRetry={handleRetry}
             />
           </div>
 

@@ -187,14 +187,52 @@ describe('DataSourcePanel', () => {
     ).toBeInTheDocument()
   })
 
-  it('renders the error state distinctly from rejected', () => {
+  // CHANGED 2026-07-14 (Phase 1): `error` now specifically means "backend
+  // reached, request rejected" — `network_error` (new, below) took over the
+  // "backend unreachable" meaning this fixture used to illustrate. BEFORE:
+  // `reason: 'ingest failed · backend unreachable'`. AFTER: a server-side
+  // rejection message, since that's what `error` now represents; the old
+  // wording moved to the new `network_error` tests.
+  it('renders the error state (server-side rejection) distinctly from rejected', () => {
     const state: DataSourceState = {
       status: 'error',
       filename: 'clean.csv',
-      reason: 'ingest failed · backend unreachable',
+      reason: 'ingest failed · server rejected the request (status 500)',
     }
     render(<DataSourcePanel state={state} onFile={vi.fn()} />)
-    expect(screen.getByText('ingest failed · backend unreachable')).toBeInTheDocument()
+    expect(screen.getByText('ingest failed · server rejected the request (status 500)')).toBeInTheDocument()
+  })
+
+  // NEW 2026-07-14 (Phase 1): `network_error` — transport never reached the
+  // backend at all (fetch-level exception, CORS block, connection refused).
+  // Distinct copy from both `rejected` (content decision, no network call)
+  // and `error` (reached, then rejected). Carries a retry action.
+  describe('network_error state', () => {
+    const networkErrorState: DataSourceState = {
+      status: 'network_error',
+      filename: 'clean.csv',
+      reason: 'backend unreachable · verify api on port 8050 · retry',
+    }
+
+    it('renders the network_error copy with a retry action, distinct from rejected/error copy', () => {
+      render(<DataSourcePanel state={networkErrorState} onFile={vi.fn()} onRetry={vi.fn()} />)
+      expect(screen.getByText('clean.csv')).toBeInTheDocument()
+      expect(
+        screen.getByText('backend unreachable · verify api on port 8050 · retry'),
+      ).toBeInTheDocument()
+      expect(screen.getByText('retry')).toBeInTheDocument()
+      // Never shares copy with the validation-rejection or server-error messages.
+      expect(screen.queryByText('no numeric vectors found')).not.toBeInTheDocument()
+    })
+
+    it('clicking "retry" triggers onRetry, not the file picker', () => {
+      const onRetry = vi.fn()
+      const onFile = vi.fn()
+      render(<DataSourcePanel state={networkErrorState} onFile={onFile} onRetry={onRetry} />)
+      fireEvent.click(screen.getByText('retry'))
+      expect(onRetry).toHaveBeenCalledOnce()
+      expect(onFile).not.toHaveBeenCalled()
+    })
   })
 
   // NEW 2026-07-12 (Phase 1b): `offer` — a zero-numeric-columns file with
@@ -261,6 +299,7 @@ describe('DataSourcePanel', () => {
       },
       { status: 'loaded', filename: 'a.csv', rowCount: 1, dim: 1, encoding: noEncoding(1) },
       { status: 'error', filename: 'a.csv', reason: 'bad' },
+      { status: 'network_error', filename: 'a.csv', reason: 'bad' },
       {
         status: 'offer',
         filename: 'a.csv',

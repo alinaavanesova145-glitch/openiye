@@ -16,7 +16,91 @@ import {
   type StreamConfig,
 } from './useVectorStream'
 import { parseFile, detectFormat, MAX_UPLOAD_BYTES, type EncodingSummary } from '@canvas/upload/parseMatrix'
-import { IDLE_DATA_SOURCE_STATE, type DataSourceState } from '@canvas/upload/dataSourceState'
+import {
+  IDLE_DATA_SOURCE_STATE,
+  NETWORK_ERROR_MESSAGE,
+  type DataSourceState,
+} from '@canvas/upload/dataSourceState'
+
+/**
+ * Thrown by postMatrix specifically when the backend was reached but
+ * returned a non-2xx response — distinct from a network-transport failure
+ * (fetch() throws a plain TypeError for those; see classifyIngestFailure).
+ */
+class ServerIngestError extends Error {
+  readonly status: number
+  constructor(status: number) {
+    super(`REST upload failed: ${String(status)}`)
+    this.name = 'ServerIngestError'
+    this.status = status
+  }
+}
+
+/**
+ * Error taxonomy (2026-07-14 sprint, Phase 1). Root cause of the reported
+ * bug: postMatrix's `throw new Error(...)` for a non-ok response and
+ * fetch()'s own TypeError for a genuine transport failure (connection
+ * refused, CORS block, DNS failure) both used to be caught by the exact
+ * same generic `catch` in ingestFile/confirmOffer and collapsed into one
+ * `error` state with one fixed "backend unreachable" message — accurate
+ * wording for the transport case, actively misleading for the
+ * reached-but-rejected case. `fetch()` throwing TypeError specifically for
+ * network-level failures is standard Fetch API behavior; checking
+ * `instanceof TypeError` right after a fetch()-wrapping try/catch is the
+ * reliable signal here, since nothing else in postMatrix's body throws that
+ * type.
+ */
+function classifyIngestFailure(err: unknown): { status: 'network_error' | 'error'; reason: string } {
+  if (err instanceof TypeError) {
+    return { status: 'network_error', reason: NETWORK_ERROR_MESSAGE }
+  }
+  if (err instanceof ServerIngestError) {
+    return {
+      status: 'error',
+      reason: `ingest failed · server rejected the request (status ${String(err.status)})`,
+    }
+  }
+  return { status: 'error', reason: 'ingest failed · unexpected error' }
+}
+
+/** Everything needed to either retry a failed ingest or settle the panel
+ *  into partial/loaded once it succeeds. */
+interface PendingIngest {
+  origin: 'ingest' | 'offer'
+  filename: string
+  rows: number[][]
+  rowCount: number
+  dim: number
+  totalColumns: number
+  skippedFreeText: number
+  droppedRows: number
+  encoding: EncodingSummary
+}
+
+/** `offer` always settles to `loaded` (unchanged from the 2026-07-12
+ *  sprint's confirmOffer behavior) since reaching `offer` already implies
+ *  zero numeric columns; `ingest` follows the same partial-vs-loaded rule
+ *  ingestFile always used. Shared so a successful retry settles identically
+ *  to a first-try success, regardless of which path it originated from. */
+function settleDataSourceState(pending: PendingIngest): DataSourceState {
+  const { filename, rowCount, dim, encoding } = pending
+  if (pending.origin === 'offer') {
+    return { status: 'loaded', filename, rowCount, dim, encoding }
+  }
+  if (pending.skippedFreeText > 0 || pending.droppedRows > 0) {
+    return {
+      status: 'partial',
+      filename,
+      rowCount,
+      dim,
+      totalColumns: pending.totalColumns,
+      skippedFreeText: pending.skippedFreeText,
+      droppedRows: pending.droppedRows,
+      encoding,
+    }
+  }
+  return { status: 'loaded', filename, rowCount, dim, encoding }
+}
 
 /** Wire shape for MatrixUploadRequest.encoding_summary (additive, snake_case
  *  to match the rest of the WS/REST payload convention). See docs/protocol.md. */
@@ -51,6 +135,9 @@ export interface VectorDiagnosticsResult {
   confirmOffer: () => Promise<void>
   /** Dismisses a pending `offer` back to `idle` without ever ingesting. */
   dismissOffer: () => void
+  /** Re-attempts the last ingest that failed with `network_error`. No-op if
+   *  nothing is pending. */
+  retryIngest: () => Promise<void>
   /** Send live axis remapping configuration to the backend stream. */
   configureStream: (config: StreamConfig) => void
   /** True when the canvas is driven by the live WebSocket stream. */
@@ -138,7 +225,7 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
       })
 
       if (!response.ok) {
-        throw new Error(`REST upload failed: ${String(response.status)}`)
+        throw new ServerIngestError(response.status)
       }
 
       const frame: unknown = await response.json()
@@ -169,6 +256,30 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
 
   const pendingOfferRef = useRef<{ filename: string; rows: number[][]; encoding: EncodingSummary } | null>(
     null,
+  )
+  // Populated on every network_error (from either origin below) so `retry`
+  // can re-POST without asking the user to re-select/re-drop the file.
+  const pendingRetryRef = useRef<PendingIngest | null>(null)
+
+  /** Shared by ingestFile and confirmOffer/retryIngest: POSTs, and on
+   *  failure classifies + records a retry candidate + sets the right state.
+   *  Returns true on success. */
+  const attemptIngest = useCallback(
+    async (pending: PendingIngest): Promise<boolean> => {
+      try {
+        await postMatrix(pending.rows, pending.encoding)
+      } catch (err) {
+        const { status, reason } = classifyIngestFailure(err)
+        console.error(`ingest failed (${status}): ${err instanceof Error ? err.message : 'unknown error'}`)
+        pendingRetryRef.current = status === 'network_error' ? pending : null
+        setDataSourceState({ status, filename: pending.filename, reason })
+        return false
+      }
+      pendingRetryRef.current = null
+      setDataSourceState(settleDataSourceState(pending))
+      return true
+    },
+    [postMatrix],
   )
 
   const ingestFile = useCallback(
@@ -223,69 +334,52 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
       }
 
       const { rows, rowCount, dim, totalColumns, skippedFreeText, droppedRows, encoding } = outcome.matrix
-
-      try {
-        await postMatrix(rows, encoding)
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'unknown error'
-        console.error(`ingestFile: backend ingest failed: ${errorMessage}`)
-        setDataSourceState({
-          status: 'error',
-          filename: file.name,
-          reason: 'ingest failed · backend unreachable',
-        })
-        return
-      }
-
-      // Encoding categoricals is a normal, labeled outcome, not a degradation
-      // — `partial` fires only on genuine information loss (free text
-      // skipped, ragged rows dropped), never merely because encoding happened.
-      if (skippedFreeText > 0 || droppedRows > 0) {
-        setDataSourceState({
-          status: 'partial',
-          filename: file.name,
-          rowCount,
-          dim,
-          totalColumns,
-          skippedFreeText,
-          droppedRows,
-          encoding,
-        })
-      } else {
-        setDataSourceState({ status: 'loaded', filename: file.name, rowCount, dim, encoding })
-      }
+      await attemptIngest({
+        origin: 'ingest',
+        filename: file.name,
+        rows,
+        rowCount,
+        dim,
+        totalColumns,
+        skippedFreeText,
+        droppedRows,
+        encoding,
+      })
     },
-    [postMatrix],
+    [attemptIngest],
   )
 
   const confirmOffer = useCallback(async (): Promise<void> => {
     const pending = pendingOfferRef.current
     if (!pending) return
-    const { filename, rows, encoding } = pending
     pendingOfferRef.current = null
-
-    try {
-      await postMatrix(rows, encoding)
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'unknown error'
-      console.error(`confirmOffer: backend ingest failed: ${errorMessage}`)
-      setDataSourceState({ status: 'error', filename, reason: 'ingest failed · backend unreachable' })
-      return
-    }
-
-    setDataSourceState({
-      status: 'loaded',
-      filename,
-      rowCount: rows.length,
-      dim: encoding.encodedDims,
-      encoding,
+    await attemptIngest({
+      origin: 'offer',
+      filename: pending.filename,
+      rows: pending.rows,
+      rowCount: pending.rows.length,
+      dim: pending.encoding.encodedDims,
+      totalColumns: pending.encoding.totalColumns,
+      skippedFreeText: pending.encoding.skippedFreeText,
+      droppedRows: 0,
+      encoding: pending.encoding,
     })
-  }, [postMatrix])
+  }, [attemptIngest])
 
   const dismissOffer = useCallback((): void => {
     pendingOfferRef.current = null
     setDataSourceState(IDLE_DATA_SOURCE_STATE)
   }, [])
+
+  /** Re-attempts the last ingest that failed with `network_error`, without
+   *  requiring the user to re-select the file. No-op if nothing is pending
+   *  (e.g. called after a different state already superseded it). */
+  const retryIngest = useCallback(async (): Promise<void> => {
+    const pending = pendingRetryRef.current
+    if (!pending) return
+    setDataSourceState({ status: 'parsing', filename: pending.filename })
+    await attemptIngest(pending)
+  }, [attemptIngest])
 
   // ── Data priority: live stream > REST upload ────────────────────────────
 
@@ -301,6 +395,7 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
     ingestFile,
     confirmOffer,
     dismissOffer,
+    retryIngest,
     configureStream,
     isLive,
     restFrame,

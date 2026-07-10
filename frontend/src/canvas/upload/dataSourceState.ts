@@ -29,7 +29,15 @@ export type DataSourceState =
       encoding: EncodingSummary
     }
   | { status: 'loaded'; filename: string; rowCount: number; dim: number; encoding: EncodingSummary }
+  /** Transport succeeded, the backend received the request and rejected it
+   *  (non-2xx) — distinct from `network_error` (never reached the backend
+   *  at all). See docs/idealization_report.md, 2026-07-14 sprint, Phase 1. */
   | { status: 'error'; filename: string; reason: string }
+  /** Transport-level failure — fetch/XHR exception (TypeError), CORS block,
+   *  or connection refused. The backend was never reached, so this must
+   *  never share copy with `rejected` (a content-validation outcome) or
+   *  `error` (a reached-but-rejected outcome). Carries a retry action. */
+  | { status: 'network_error'; filename: string; reason: string }
   | {
       status: 'offer'
       filename: string
@@ -39,6 +47,10 @@ export type DataSourceState =
     }
 
 export const IDLE_DATA_SOURCE_STATE: DataSourceState = { status: 'idle' }
+
+/** `network_error`'s fixed copy — a transport failure has nothing
+ *  file-specific to report, unlike `rejected`/`error`'s per-file reasons. */
+export const NETWORK_ERROR_MESSAGE = 'backend unreachable · verify api on port 8050 · retry'
 
 /** True when a state's encoding facts should mention categorical encoding at all. */
 function hasEncodedCategoricals(encoding: EncodingSummary): boolean {
