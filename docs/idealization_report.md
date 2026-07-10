@@ -1003,3 +1003,315 @@ fix: sidebar honors 30% panel spec with clamped width + scrollable overflow
 ```
 
 Local on `main`, not pushed, per instruction.
+
+---
+
+# 2026-07-12 — Sprint: categorical encoding + sidebar layout re-check
+
+## Phases 2/3 — audited, found already fixed, no code touched
+
+This sprint's brief re-described the exact sidebar-width and scroll bugs
+from the **previous** sprint (2026-07-10, commit `f48d740`, immediately
+above). Before writing any code, I checked the current state of
+`App.tsx`/`DiagnosticSidebar.tsx` against that prior fix and confirmed it
+was already in place (`minWidth: 320, maxWidth: 480` on the sidebar wrapper;
+`flex: 1, minHeight: 0, overflowY: 'auto'` on `DiagnosticSidebar`'s own
+root). Rather than re-apply a no-op "fix" or silently skip the phases, I
+re-ran the exact live verification the brief asked for, with fresh
+screenshots, to produce current evidence rather than reusing the prior
+sprint's:
+
+| Width | Sidebar box | Canvas box | Right edge flush? |
+|---|---|---|---|
+| 1280 | `x=897, width=383` | `width=896` | yes |
+| 1680 | `x=1201, width=479` | `width=1200` | yes |
+| 2560 | `x=2081, width=479` | `width=2080` | yes |
+
+Scroll, forced under a genuine overflow (1280×620 viewport):
+`scrollHeight=591 > clientHeight=428` confirmed before scrolling; after
+`el.scrollTop = el.scrollHeight`, RENDER LOOP's box was fully within the
+620px viewport (programmatic check, not just visual).
+
+Screenshots: [`docs/screenshots/2026-07-12-sidebar-audit/`](screenshots/2026-07-12-sidebar-audit/)
+(`width-1280.png`, `width-1680.png`, `width-2560.png`, `scroll-after.png`).
+
+**No commit for Phases 2/3** — there was nothing to change. Creating a
+commit with an empty or redundant diff would violate "surgical changes
+only, no rewrites of working code." This is stated here explicitly rather
+than silently, per the same honesty principle the rest of this report holds
+product behavior to.
+
+## Phase 1 — Categorical encoding
+
+### The bug this replaces
+
+Before this sprint, any non-numeric column — regardless of whether it was a
+genuine free-text field or a clean, bounded-cardinality label like
+`status: nominal/critical` — was dropped entirely (see the 2026-07-07
+sprint's Phase 0/1). A mixed file lost real structure; a pure-categorical
+file was rejected outright even when it was perfectly good data. This
+sprint replaces "drop everything non-numeric" with two honest, deliberate
+modes: automatic encoding when numeric data is also present (nothing to
+consent to — the numeric visualization was always going to happen), and an
+explicit opt-in when a file is *only* categorical (visualizing it at all is
+a choice IYE shouldn't make silently).
+
+### Classification rules (as implemented)
+
+For each non-numeric column (`parseMatrix.ts`'s `classifyNonNumericColumn`):
+
+| Condition | Classification |
+|---|---|
+| Zero non-empty values | `freetext` (skipped) |
+| `uniqueCount > 1000` | `freetext` (skipped) — `FREQUENCY_MAX_CARDINALITY` |
+| `rowCount >= 20 AND uniqueCount/rowCount > 0.9` | `freetext` (skipped) — the near-unique ratio check |
+| `uniqueCount <= 20` | `onehot` — `ONEHOT_MAX_CARDINALITY` |
+| otherwise (21–1000 uniques) | `frequency` |
+
+The near-unique ratio check only applies once there are ≥20 rows —
+otherwise a genuinely small categorical column (e.g. 2 rows, 2 categories)
+would be misjudged as "free text" purely for having no repeats yet. This
+is a real, deliberate threshold choice, not an approximation: it directly
+determined which existing tests changed behavior (see below) and shaped the
+demo fixture's row counts.
+
+**Encoding methods:**
+- **One-hot** (≤20 categories): a stable *sorted* category list (no
+  hashing, no seed) → deterministic by construction. Block-scaled by
+  `1/√(categoryCount)` so a column's *total* contribution to Euclidean
+  distance (summed across its expanded dims) is comparable to one
+  unit-variance dimension, not N times larger merely because it expanded
+  into N columns — a real risk given a 15-category one-hot column would
+  otherwise contribute ~15× the distance-weight of an average numeric
+  column, silently letting cardinality (not signal) dominate UMAP's
+  neighbor graph.
+- **Frequency** (21–1000 categories): each value replaced by its proportion
+  of rows sharing it, then z-score normalized like any numeric column.
+  Chosen over feature hashing specifically to avoid needing a seed at all
+  — determinism follows from the encoding being a pure function of the
+  data, not from careful seed management.
+- **Normalization**: raw numeric columns are z-score normalized **only
+  when** the file also has at least one encoded categorical column (the
+  "mixed pathway"). A pure-numeric upload is byte-for-byte unaffected by
+  this sprint — the existing pipeline's numeric handling is untouched.
+  Once any encoding happens, though, *all* columns (numeric and encoded)
+  get normalized together, because leaving raw numeric columns at their
+  natural scale next to bounded [0, 1/√n] one-hot values would just move
+  the "which magnitude dominates" problem from categorical-vs-categorical
+  to categorical-vs-numeric instead of solving it.
+
+### JSON nested-object flattening
+
+Objects flatten to dotted-path keys up to depth 3 (`MAX_JSON_FLATTEN_DEPTH`);
+`a.b.c` at exactly depth 3 still flattens, `a.b.c.d` (depth 4) does not —
+the depth-3 object becomes an opaque leaf, stringified via `JSON.stringify`
+and then classified like any other string column (in practice this makes a
+deeply-nested field with materially different content per row read as
+near-unique → skipped as free text, which is what happened in testing).
+Arrays are *never* recursed into, at any depth — also stringified as opaque
+leaves — a documented simplification (`parseMatrix.ts`'s `flattenObject`),
+not a general-purpose JSON normalizer.
+
+### Offer flow (Phase 1b)
+
+A file with zero numeric columns but ≥1 encodable categorical column stops
+at a new `offer` panel state — the encoded matrix is computed eagerly
+(cheap, deterministic), but `useVectorDiagnostics.ts`'s `ingestFile` does
+**not** POST it. It's held in a ref (`pendingOfferRef`) until the user
+clicks "encode & visualize" (`confirmOffer`) or "dismiss" (`dismissOffer`,
+clears the ref, returns to `idle`, POSTs nothing, ingests nothing). Verified
+live (see gate below) that dismissing produces zero network activity and
+zero canvas change — the product principle holds: IYE does not fabricate
+geometry from pure-text data without consent, and this is enforced at the
+code level (no POST call exists on that path), not just by convention.
+
+Once confirmed, the resulting `loaded` state is unconditionally labeled
+`visualizing encoded categories · not raw measurements` whenever
+`encoding.numericColumns === 0` — derived directly from the encoding summary
+rather than a separate "came from an offer" flag, since reaching `loaded`
+with zero numeric columns is only possible via a confirmed offer in the
+first place.
+
+### `partial` no longer means "encoding happened"
+
+A meaningful state-machine redefinition: previously `partial` fired
+whenever *any* non-numeric column was dropped. Now that bounded-cardinality
+categoricals are encoded rather than dropped, encoding is a normal, labeled
+*success* outcome — `partial` fires only on genuine information loss
+(`skippedFreeText > 0` or `droppedRows > 0`), never merely because
+categorical encoding occurred. A clean mixed file (all columns either
+numeric or encodable) now reaches `loaded`, with the encoding facts folded
+into that message instead.
+
+### `encoding_summary` — additive protocol field (Phase 1c)
+
+The backend never computes encoding itself; it only accepts, echoes, and
+narrates what the frontend's parser already determined:
+
+- `MatrixUploadRequest.encoding_summary` (backend/app/api/main.py): new
+  optional `EncodingSummary` submodel, `None` by default — a pure-numeric
+  upload's request body is unchanged from before this field existed (no
+  `encoding_summary` key sent at all).
+- `VectorFramePayload.encoding_summary` (sdk/iye/server.py): additive,
+  `None` unless the request carried one; echoed back verbatim.
+- Anomaly narrative prompt (`ingest_and_broadcast`): when
+  `encoding_summary` is present, the `metrics_summary` string fed to
+  `generate_anomaly_explanation` gets a note appended — *"N of the M source
+  column(s) are encoded categorical features — K of this vector's
+  dimensions are encoded categories, not raw measurements."* — verified via
+  a hermetic e2e test capturing the actual prompt the (stubbed) Ollama
+  server received, not just the response payload.
+- Documented additively in `docs/protocol.md` (new `encoding_summary`
+  subsection under `frame`, plus a short new REST section for the request
+  side) in the same commit, per directive #3.
+
+## Existing test changes — quoted, not silently altered
+
+Per directive #2, every changed assertion is quoted here with the reason;
+nothing was deleted to make a test pass.
+
+**`parseMatrix.test.ts`**, `'produces a "partial" outcome for a mixed CSV — drops the non-numeric column, reports exact counts'`:
+- BEFORE: `id`/`label` (2 non-numeric columns, 2 rows) asserted
+  `totalColumns=6, dim=4, droppedColumns=2`, rows equal to just the 4 raw
+  numeric values.
+- AFTER (renamed `'encodes low-cardinality categorical columns in a mixed CSV instead of dropping them'`):
+  both columns are low-cardinality (2 uniques each) and are now one-hot
+  encoded, not dropped — asserts `dim=8`, `encoding.encodedCategoricalColumns=2`,
+  exact encoded row values (one-hot block-scaled by `1/√2`, numeric columns
+  z-score normalized since encoding occurred).
+- Reason: this is exactly the new intended behavior (Phase 1a), not a
+  regression — the old assertion described the bug this sprint fixes.
+
+**`parseMatrix.test.ts`**, `'rejects a CSV with no numeric columns at all'`:
+- BEFORE: `name,label\nalice,ok\nbob,bad` (0 numeric, 2 low-cardinality
+  categorical columns) asserted `{kind: 'rejected'}`.
+- AFTER: this exact fixture is superseded by
+  `'produces an "offer" outcome for a CSV with only encodable categorical columns (no numeric)'`,
+  asserting `{kind: 'offer'}` instead. A new, separate test with a genuinely
+  unusable fixture (25 rows, single near-unique column) now covers the
+  actual rejected path.
+- Reason: this is Phase 1b's whole point — zero-numeric-but-categorical
+  files are no longer silently rejected, they're offered.
+
+**`parseMatrix.test.ts`**, `'parses an array of flat numeric objects, dropping non-numeric fields column-wise'`:
+- BEFORE: `label` (2 uniques) asserted `dim=2, droppedColumns=1`, rows
+  equal to just `[x, y]`.
+- AFTER (renamed `'encodes a low-cardinality field in an array of flat objects instead of dropping it'`):
+  asserts `dim=4` (x, y z-scored + label one-hot), exact values. Same
+  reasoning as the CSV case above.
+
+**`DataSourcePanel.test.tsx`**, `partial`/`loaded` fixtures:
+- BEFORE: `droppedColumns: 2` field, message text "... 2 non-numeric skipped".
+- AFTER: `skippedFreeText: 2` field (renamed — these are genuinely
+  unencodable, not just "non-numeric" anymore) plus a required `encoding`
+  summary; message text "... 2 skipped (free text)".
+- Reason: the field rename reflects that most non-numeric columns are no
+  longer dropped at all; the ones that still are get skipped specifically
+  *because* they're free text, and the copy now says so.
+
+## Gate results
+
+| Gate | Result |
+|---|---|
+| Mixed CSV → matrix width and column accounting exact | **PASS** — `parseMatrix.test.ts` unit tests + live: `sample_telemetry_mixed.csv` (204 rows, 6 numeric + 1 categorical) → `dim=8`, `"204 rows · 8 dims · clustered · 6 numeric · 1 encoded categorical"`, `status: ANOMALY`, all 8 planted outliers flagged |
+| Pure-categorical JSON → offer eligibility flag, no pipeline run without confirmation | **PASS** — live: `pure_categorical.json` (10 rows, 3 categorical fields, 0 numeric) → `offer` state, zero network POST until "encode & visualize" clicked; "dismiss" → `idle`, zero POST, zero canvas change |
+| Confirmed offer → explicitly labeled visualization | **PASS** — live: `"10 rows · 11 dims · clustered · visualizing encoded categories · not raw measurements"` |
+| Prose/binary file → rejected | **PASS** — live: `prose.txt` → `"unsupported file type · expected json / csv / npy"` (rejected at the extension check, previous scene untouched) |
+| Determinism (same file parsed twice → identical matrix) | **PASS** — `parseMatrix.test.ts`: `parseCsvMatrix(csv)` called twice on the same input, deep-equal outcomes (no hashing/seed anywhere in the encoding path) |
+| Backend: encoding_summary echoed back unchanged / null when absent | **PASS** — `test_encoding_summary.py` (TestClient, 3 tests) |
+| Backend: narrative prompt mentions encoding when summary present | **PASS** — `test_encoding_summary.py` (hermetic e2e, captures the actual prompt sent to stubbed Ollama) |
+| Existing frontend/backend suites still green | **PASS** — no assertion deleted to force a pass; 3 tests updated with reasons quoted above |
+
+Screenshots: [`docs/screenshots/2026-07-12-encoding/`](screenshots/2026-07-12-encoding/)
+(`1-mixed-csv-loaded.png`, `2a-offer-state.png`, `2b-offer-confirmed-labeled.png`,
+`2c-offer-dismissed.png`, `3-prose-rejected.png`).
+
+## Full verification
+
+| Check | Result |
+|---|---|
+| `pytest tests/` (backend) | 31 passed (27 → 31: `test_encoding_summary.py`, 4 new) |
+| `ruff check .` (backend, incl. `tools/make_demo_fixture.py`) | All checks passed |
+| `tsc --noEmit` (frontend) | clean |
+| `eslint . --max-warnings 0` (frontend) | clean |
+| `vitest run` (frontend) | 83 passed (69 → 83: 14 net new/changed across `parseMatrix.test.ts` + `DataSourcePanel.test.tsx`) |
+| `vite build` (frontend) | clean, 0 warnings |
+
+## Demo fixture
+
+`tools/make_demo_fixture.py` now also generates
+`demo/sample_telemetry_mixed.csv` (204 rows: 196 nominal + 8 planted
+outliers, 6 numeric dims + 1 categorical `status` column). Parameters were
+**re-derived empirically, not reused** from the numeric-only fixture:
+
+- `OUTLIER_MAGNITUDE` turned out not to matter at all once encoding
+  triggers z-score normalization — z-scoring is scale-invariant, confirmed
+  by testing 2000/5000/20000/100000 against the real pipeline and getting
+  identical results for a fixed seed.
+- What *does* matter is outlier count: 4 outliers (the numeric-only
+  fixture's count) was unreliable post-normalization (~40% of seeds
+  tried); 8 was 100% reliable (5/5 seeds tried, all 8 planted rows
+  flagged).
+- A second categorical column (`region`, uncorrelated with the
+  outlier/nominal split) was tried and *reduced* reliability — an
+  uninformative one-hot block dilutes UMAP's neighbor graph — so the
+  fixture intentionally has only the one correlated categorical column.
+
+Verified against the real pipeline (not just computed): parsed via the
+actual `parseCsvMatrix` (through `tsx`, not a Python reimplementation) and
+POSTed to a running backend — `status: ANOMALY`, all 8 outlier rows
+flagged.
+
+## Files touched this sprint
+
+**Created**: `backend/tests/test_encoding_summary.py`,
+`demo/sample_telemetry_mixed.csv`,
+`docs/screenshots/2026-07-12-sidebar-audit/*.png`,
+`docs/screenshots/2026-07-12-encoding/*.png`.
+
+**Modified**: `frontend/src/canvas/upload/parseMatrix.ts` (classification,
+one-hot/frequency encoding, JSON flattening, `offer` outcome),
+`frontend/src/canvas/upload/dataSourceState.ts` (+test — `offer` state,
+`skippedFreeText` rename, encoding-aware messages), `frontend/src/ui/DataSourcePanel.tsx`
+(+test — offer rendering, confirm/dismiss buttons), `frontend/src/canvas/math/useVectorDiagnostics.ts`
+(`confirmOffer`/`dismissOffer`, `encoding_summary` wire mapping),
+`frontend/src/App.tsx` (wired offer handlers), `backend/app/api/main.py`
+(`EncodingSummary` model, narrative prompt note), `sdk/iye/server.py`
+(additive `encoding_summary` field), `backend/tests/conftest.py`
+(`received_prompts` capture, additive), `tools/make_demo_fixture.py`
+(mixed fixture generator), `docs/protocol.md`, `README.md`.
+
+## Remaining known gaps (deliberately not touched, and why)
+
+1. **Feature hashing was not implemented** — frequency encoding was chosen
+   instead for the 21–1000 cardinality band (see rationale above). The
+   spec allowed either; hashing remains a reasonable future option if a
+   real dataset's frequency distribution turns out to be uninformative
+   (e.g., near-uniform category frequencies).
+2. **Array-of-arrays JSON stays numeric-only** — no column names exist to
+   classify categoricals against in that shape, so this sprint left it
+   exactly as before. Only CSV and array-of-objects JSON get categorical
+   encoding.
+3. **CSV parsing is still comma-split, not full RFC 4180** (a pre-existing,
+   previously-documented gap, unchanged this sprint) — quoted fields with
+   embedded commas aren't supported. Irrelevant to categorical
+   classification itself (a malformed row is still dropped as ragged
+   before classification runs).
+4. **The unrelated upload-rendering gap noted in the prior sprint** (dropped
+   data's point cloud/beacons don't visually render, though the sidebar
+   reports correct counts) **is still present**, confirmed again during
+   this sprint's live gates (see the mixed-CSV screenshot: a beacon dot
+   renders but the full point cloud/hulls don't). Out of scope per this
+   sprint's own boundaries too (categorical encoding and sidebar layout,
+   not canvas rendering) — flagged again so it isn't lost between sprints.
+
+## Commits ready for review
+
+```
+be746fc feat: categorical encoding — automatic for mixed data, opt-in for pure-text, always labeled
+```
+
+(No commit for Phases 2/3 — audited and found already fixed by the prior
+sprint's `f48d740`; nothing to commit.)
+
+All local on `main`, not pushed, per instruction.
