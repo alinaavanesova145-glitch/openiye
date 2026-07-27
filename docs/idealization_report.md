@@ -1753,3 +1753,199 @@ a4b6bad fix(backend): guard against zero-size arrays and non-numeric payloads in
 
 Pushed to `origin/main` along with the 13 prior local commits (`b805cfe`
 through `75d77a9`) — local and remote confirmed in sync at `a4b6bad`.
+
+# 2026-07-28 — Sprint: automated categorical/text vectorization for non-browser callers
+
+Requested as a backend build-out ("automated categorical & text
+vectorization layer... TF-IDF or a small local embedding model"). Phase 1's
+own audit instruction — confirm no scaffolding already exists before
+writing new code — surfaced that the premise was wrong: this already
+shipped, in full, client-side.
+
+## Phase 0 — Audit finding: the described gap doesn't exist for the primary flow
+
+`frontend/src/canvas/upload/parseMatrix.ts` (2026-07-12 sprint) already
+implements everything requested: column classification (`numeric | onehot
+| frequency | freetext`) with named, justified cardinality cutoffs
+(`ONEHOT_MAX_CARDINALITY = 20`, `FREQUENCY_MAX_CARDINALITY = 1000`, plus a
+near-unique-ratio guard), deterministic one-hot/frequency encoding
+block-scaled by `1/√categoryCount` to prevent dimensionality blowup, junk
+exclusion reported via `EncodingSummary.skippedFreeText` (not a silent
+drop), mixed numeric+categorical+text producing one coherent matrix, zero
+external dependency, and 32 existing frontend tests. Building a second,
+backend-side encoder as originally scoped — with TF-IDF/embeddings, a
+different set of thresholds — would have duplicated this and created two
+divergent sources of truth for the same concept, the opposite of what the
+task's own Phase 1.2 asked for ("extend, don't duplicate").
+
+Presented this finding plus four options to the founder; chose: **port the
+existing, proven encoder into the Python SDK**, so the two ingestion paths
+with no browser in the loop — a direct REST call to
+`POST /api/canvas/vectors`, and `iye.show()` called straight from a Python
+script — get equivalent auto-encoding instead of a dead end (previously: a
+raw non-numeric `matrix` was rejected by Pydantic's `List[List[float]]`
+typing before route code ran at all; `show()` silently logged and returned
+on any non-numeric input).
+
+## Phase 1 — `sdk/iye/encoding.py`
+
+Line-for-line port of `parseMatrix.ts`'s `classifyNonNumericColumn`,
+`encodeOneHot`, `encodeFrequency`, and `buildFeatureMatrix`, kept
+numerically identical (same thresholds, same one-hot scale
+`1/√n`, same frequency-then-z-score formula) so a categorical column
+produces the same shape of result regardless of which path ingested it.
+One deliberate, documented deviation from the browser path: parseMatrix.ts's
+`'offer'` outcome (zero numeric columns but encodable categorical
+structure) requires explicit human confirmation before proceeding, because
+a browser user is in the loop to click confirm — there is no human in the
+loop for a direct API call or a script, so that case is treated as an
+automatic accept here (the function still returns whatever numeric columns
+resulted; only a **fully** empty result, every column excluded as free
+text, is treated as unusable, and that's handled by the existing
+zero-column guardrail below, not a new code path).
+
+## Phase 2 — Wiring into `backend/app/api/main.py` and `sdk/iye/__init__.py`
+
+- `MatrixUploadRequest.matrix` loosened from `List[List[float]]` to
+  `List[List[Any]]`. `ingest_and_broadcast` now: checks for ragged rows up
+  front (needed before per-column classification can happen at all) →
+  422 `stage=ingestion`; then branches on `iye.encoding.is_fully_numeric`
+  — a **fully numeric matrix takes the exact same fast path as before this
+  sprint**, byte-for-byte (this is the common case: browser uploads are
+  already encoded by the time they arrive, so nothing changes for them);
+  a matrix with any non-numeric cell routes through
+  `iye.encoding.vectorize_matrix` instead, producing a computed
+  `encoding_summary` folded into the response the same way a
+  browser-supplied one already was (never both — a request takes one path
+  or the other).
+- The **existing** zero-column/zero-row 422 guardrails from the 2026-07-16
+  sprint are untouched and now also catch the new case where every column
+  is excluded as free text (`vectorize_matrix` returns a zero-dim result;
+  no new code path was added for it — it falls straight into the guardrail
+  that already existed).
+- `iye.show()`: on a non-numeric `np.asarray` failure, now attempts
+  `vectorize_matrix` for row/column-shaped input (list of lists/tuples)
+  before giving up; a flat 1D list of non-numeric values has no column
+  structure to classify against and is still rejected, logged, exactly as
+  before.
+
+## Phase 3 — Scoped deviations from the original request
+
+1. **No TF-IDF or embedding model was introduced**, despite the original
+   ask — the free-text strategy is frequency-based cardinality exclusion,
+   identical to what the browser path already does. Introducing a second,
+   different free-text strategy backend-side would have reintroduced the
+   exact inconsistency this sprint exists to avoid.
+2. **The flat `data` + `dim` numeric-telemetry path was not touched** —
+   scoped to `matrix` only, since flat data has no column/header semantics
+   for categorical classification to apply to; a different, unrelated
+   input shape from the tabular `matrix` field.
+
+## Existing test updated — quoted, not silently changed
+
+`backend/tests/test_ingest_validation.py`'s
+`test_non_numeric_matrix_values_rejected_by_pydantic_before_reaching_our_code`
+asserted the *old* contract (Pydantic's automatic 422 for a non-float
+`matrix`). That contract no longer exists — non-numeric values are now a
+supported input, not an error.
+
+BEFORE:
+```python
+def test_non_numeric_matrix_values_rejected_by_pydantic_before_reaching_our_code():
+    response = client.post("/api/canvas/vectors", json={"matrix": [["a", "b", "c"]]})
+    assert response.status_code == 422
+    body = response.json()
+    assert "detail" in body
+    assert isinstance(body["detail"], list)
+    assert any("matrix" in str(err.get("loc", [])) for err in body["detail"])
+```
+
+AFTER (renamed `test_non_numeric_matrix_values_now_auto_encoded_not_rejected`):
+```python
+def test_non_numeric_matrix_values_now_auto_encoded_not_rejected():
+    response = client.post("/api/canvas/vectors", json={"matrix": [["a", "b", "c"]]})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["point_count"] == 1
+    assert body["coordinates"][0] == {"x": 1.0, "y": 1.0, "z": 1.0}
+    assert body["encoding_summary"] == {
+        "total_columns": 3, "numeric_columns": 0,
+        "encoded_categorical_columns": 3, "encoded_dims": 3,
+        "skipped_free_text": 0,
+    }
+```
+
+`test_encoding_summary.py`'s docstring (which stated "the backend never
+computes encoding itself") was also updated to note that's true only for
+the browser-originated path; the two paths never overlap.
+
+## New tests
+
+**`test_encoding_module.py`** (20 tests) — unit tests directly on
+`iye.encoding`: classification tier boundaries (exactly 20/21 categories
+crossing onehot→frequency, exactly 1000/1001 crossing frequency→freetext,
+near-unique-ratio exclusion, the small-sample fallback-to-onehot case),
+one-hot scale math, frequency z-score math, `vectorize_matrix`
+orchestration (pure categorical, mixed, all-freetext→zero-dim, ragged →
+`RaggedMatrixError`), boolean-as-categorical handling, `is_fully_numeric`.
+
+**`test_backend_vectorization.py`** (7 tests) — end-to-end via the REST
+endpoint: pure categorical payload, free-text column excluded not
+rejected, mixed numeric+categorical+text single matrix, high-cardinality
+column confirmed to switch to frequency encoding (**1 output dim, not
+21** — the dimensionality-blowup guard, verified at the API layer), an
+all-junk payload confirmed to still hit the *existing* zero-column 422
+(guardrail preserved, not weakened), an already-numeric matrix confirmed
+unaffected (non-regression), ragged non-numeric rows still 422.
+
+**`test_show_vectorization.py`** (3 tests) — `iye.show()`'s new fallback,
+with `requests.post` monkeypatched: categorical input gets encoded before
+posting, a plain numeric matrix is provably unaffected (no
+`encoding_summary` key appears at all), a flat non-numeric list is
+rejected/logged rather than mis-encoded.
+
+## Full verification
+
+| Check | Result |
+|---|---|
+| `pytest tests/` (backend) | 83 passed (53 → 83: 30 new across 3 new files + 1 updated) |
+| `ruff check .` (backend) | All checks passed |
+| `tsc --noEmit` (frontend) | clean |
+| `eslint . --max-warnings 0` (frontend) | clean |
+| `vitest run` (frontend) | 97 passed (unchanged — no frontend code touched) |
+| `vite build` (frontend) | clean |
+
+## Files touched this sprint
+
+**Created**: `sdk/iye/encoding.py`, `backend/tests/test_encoding_module.py`,
+`backend/tests/test_backend_vectorization.py`,
+`backend/tests/test_show_vectorization.py`.
+
+**Modified**: `backend/app/api/main.py` (`MatrixUploadRequest.matrix`
+loosened to `List[List[Any]]`, ragged-check moved earlier, numeric/mixed
+branch, `encoding_summary_dict` unification), `sdk/iye/__init__.py`
+(`_as_row_list` helper, `show()`'s non-numeric fallback),
+`backend/tests/test_ingest_validation.py` (one test updated, quoted
+above), `backend/tests/test_encoding_summary.py` (docstring updated for
+accuracy).
+
+## Remaining known gaps (deliberately not touched, and why)
+
+1. **The flat `data`+`dim` path has no categorical support** — deliberate
+   scoping decision (Phase 3 above), not an oversight; it's telemetry-shaped
+   data with no column semantics.
+2. **No TF-IDF/embedding-based free-text handling** — deliberate: the
+   frequency-based exclusion strategy already proven client-side was
+   ported as-is rather than introducing a second, inconsistent approach.
+3. **The rendering bug and LLM-timeout items from the prior roadmap
+   review are still open** — this sprint was scoped to vectorization only,
+   per the founder's explicit choice; not re-addressed here.
+
+## Commits ready for review
+
+```
+59f4b73 feat(backend): auto-encode non-numeric matrix columns for non-browser callers
+```
+
+Pushed to `origin/main` along with all prior commits — local and remote
+confirmed in sync at `59f4b73`.
