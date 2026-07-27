@@ -1566,3 +1566,190 @@ state, `NETWORK_ERROR_MESSAGE`), `frontend/src/canvas/math/useVectorDiagnostics.
 ```
 
 All local on `main`, not pushed, per instruction.
+
+# 2026-07-16 — Sprint: zero-size array crash — empty/malformed/degenerate payloads
+
+P0 stability bug report: a NumPy reduction (`np.max`/similar) called on a
+`size == 0` array, crashing the ingestion → feature-matrix pipeline with an
+uncaught 500. Diagnosed via empirical reproduction (not guessing) before
+touching any code.
+
+## Phase 1 — Root cause chain (four distinct bugs, not one)
+
+Empirically confirmed `np.mean`/`np.std`/`np.median` on an empty array warn
+and return NaN (don't raise), while `.max()`-family calls (used internally
+by UMAP and NumPy's own reductions) do raise
+`ValueError: zero-size array to reduction operation maximum which has no
+identity`. That distinction shaped the whole diagnosis: the crash isn't in
+this codebase's own arithmetic (`temporal_engine.py`'s `.mean()`/`.std()`/
+`.max()`/`np.argmax` calls were already all gated behind `if n_points > 1`,
+confirmed safe, not touched) — it's in degenerate shapes reaching the
+`iye.reduce_to_3d` → `iye.cluster` pipeline in
+`backend/app/api/main.py`'s `ingest_and_broadcast`.
+
+Four independent crash/product-bug paths, each reproduced directly:
+
+1. **Ragged `matrix` rows** — `np.array(request.matrix, dtype=np.float64)`
+   on inconsistent row lengths (e.g. `[[1,2,3,4,5,6],[7,8]]`) raises
+   `ValueError: setting an array element with a sequence. The requested
+   array has an inhomogeneous shape...`, uncaught, before this fix.
+   Pydantic's `List[List[float]]` typing does **not** catch this — it only
+   validates per-element type, not cross-row length consistency.
+2. **Zero-column matrix** (e.g. `"matrix": [[], []]`) — every row present
+   but empty. Previously reached `reduce_to_3d`'s zero-pad branch
+   (`n_features < 3`) and silently produced fabricated `(0,0,0)` geometry
+   with a `200 OK` — not a crash, but a violation of this codebase's
+   "IYE never silently fabricates geometry" principle from prior sprints.
+3. **`n_samples` in `{2,3,4}` with `n_features > 3`** — the exact
+   scenario from the bug report. Live stack trace confirmed the crash is
+   inside `umap-learn`'s `simplicial_set_embedding`
+   (`umap_.py`), calling `graph.data.max()` on a zero-size internal sparse
+   array. Empirically **non-monotonic**: n=0 → sklearn's own clean
+   `"Found array with 0 sample(s)..."`; n=1 → succeeds; n=2 → the exact
+   `graph.data.max()` crash; n=3,4 → a different
+   `TypeError: Cannot use scipy.linalg.eigh for sparse A with k >= N`;
+   n=5+ → succeeds with a real reduction.
+4. **`n_samples == 1`** (any feature count) — `reduce_to_3d` itself
+   succeeds, but the resulting `(1, 3)` coords crash inside `iye.cluster`'s
+   HDBSCAN call: `ValueError: k must be less than or equal to the number
+   of training points`.
+
+Also confirmed empirically (live curl) that **non-numeric matrix values
+are already safely rejected** by `MatrixUploadRequest.matrix:
+Optional[List[List[float]]]` — FastAPI/Pydantic reject non-float elements
+with their own automatic 422 before route code ever executes. Not a bug;
+answers Phase 3 below.
+
+## Phase 2 — Guardrails added, per call site
+
+- **Structured 422 contract**: `HTTPException(detail=...)` always nests
+  under `{"detail": ...}` in FastAPI's default handling, incompatible with
+  the flat contract required. Grepped `backend/app/api/` first for an
+  existing error-envelope convention — found none (prior sprints used
+  plain `HTTPException`) — so a new `IngestValidationError` exception +
+  `@app.exception_handler` pair was added
+  (`backend/app/api/main.py:162-186`), returning exactly:
+  ```json
+  {"error": "empty_or_invalid_payload", "status": 422, "detail": "<reason>", "stage": "<ingestion|feature_matrix|vectorization>"}
+  ```
+- **Bug #1 (ragged rows)** → reject, `stage="ingestion"`. `np.array(...)`
+  wrapped in try/except `ValueError`, re-raised as `IngestValidationError`.
+  Nothing usable to fall back to for an inconsistent shape.
+- **Bug #2 (zero columns)** → reject, `stage="feature_matrix"`. New
+  `data_2d.shape[1] == 0` check added alongside the existing
+  `shape[0] == 0` check (also upgraded 400→422 for a consistent contract).
+  Rejection, not fallback, matches the task's "nothing usable" default and
+  closes the silent-fabrication bug.
+- **Bug #3 (UMAP, n_samples 2-4)** and **bug #4 (HDBSCAN, n_samples <2)**
+  → **fallback, not rejection**. Reasoning: this is real numeric data, just
+  below the pipeline's statistical assumptions — rejecting outright would
+  be overly strict for a legitimately small dataset. `reduce_to_3d` now
+  raises on `n_samples == 0` (nothing to reduce) but for `1 <= n_samples <
+  MIN_SAMPLES_FOR_REDUCTION` truncates to the first 3 raw columns instead
+  of invoking UMAP (`sdk/iye/__init__.py:100-103`); `cluster` now
+  short-circuits `n_samples < 2` to the same well-defined all-noise `-1`
+  labels HDBSCAN already returns for n=2-4, without calling into HDBSCAN
+  at all (`sdk/iye/__init__.py:139-140`). Rather than characterize UMAP's
+  non-monotonic crash boundary precisely (fragile, scipy/umap-version-
+  dependent), both reuse the codebase's pre-existing, already-proven-safe
+  `_HDBSCAN_MIN_CLUSTER_SIZE = 5` constant, exposed as the new
+  `iye.MIN_SAMPLES_FOR_REDUCTION`. The fallback is flagged, never silent:
+  a new additive `reduction_note: Optional[str]` field on
+  `VectorFramePayload` (`sdk/iye/server.py`, same pattern as prior
+  additive fields `temporal`/`encoding_summary`/`id`/`type`) explains
+  exactly what happened whenever it fires; `null` otherwise.
+- **Defense-in-depth backstop**: the three pipeline calls
+  (`reduce_to_3d`/`cluster`/`detect_anomalies`) are wrapped in a narrow
+  `try/except Exception` that logs the full traceback via
+  `logger.exception(...)` and converts anything genuinely unanticipated
+  into the same structured 422 (`stage="vectorization"`) — not a masking
+  catch-all (the specific precondition checks above are the primary
+  defense; this only catches what they didn't anticipate), per the task's
+  own instruction against blanket catches.
+
+## Phase 3 — Non-numeric/categorical path: none needed, none built
+
+Per the 2026-07-12 categorical-encoding sprint, all categorical/text
+encoding already happens exclusively client-side
+(`frontend/src/canvas/upload/parseMatrix.ts`); the backend's
+`MatrixUploadRequest` schema is strictly numeric-only by design. Confirmed
+still true this sprint (live curl, see Phase 1) — non-numeric values
+can't structurally reach backend pipeline code, Pydantic rejects them
+with its own 422 first. **No backend categorical/text vectorization path
+exists, and none was built** — building one would be out of scope (no
+non-numeric data can arrive here) and is explicitly flagged as such,
+not silently declined.
+
+## Phase 4 — Regression tests
+
+New file `backend/tests/test_ingest_validation.py`, 14 tests, one per
+scenario, each asserting the specific structured response body (not just
+"doesn't crash"): ragged rows (×2 shapes), zero-column matrix (×2 shapes),
+empty JSON object, empty `matrix: []`, empty `data: []`, flat data not a
+multiple of `dim`, non-numeric values (asserting Pydantic's own 422 shape,
+distinct from this sprint's contract), single-row fallback, the exact
+reported n=2/six-feature UMAP crash (asserting the literal truncated
+coordinates), n=3/4 fallback, n=5 non-regression check (`reduction_note`
+must be `null` — the fix must not over-trigger), and the `n_features == 3`
+passthrough case (also `reduction_note: null`, since no reduction was ever
+skipped).
+
+No pre-existing test asserted on the old 400-status/plain-string
+responses being changed to 422/structured (grepped
+`backend/tests/` for `400`, the old message strings, and found nothing) —
+nothing needed to be quoted before/after.
+
+## Full verification
+
+| Check | Result |
+|---|---|
+| `pytest tests/` (backend) | 53 passed (39 → 53: `test_ingest_validation.py` +14 new) |
+| `ruff check .` (backend) | All checks passed |
+| `tsc --noEmit` (frontend) | clean |
+| `eslint . --max-warnings 0` (frontend) | clean |
+| `vitest run` (frontend) | 97 passed (unchanged — no frontend code touched) |
+| `vite build` (frontend) | clean |
+
+## Files touched this sprint
+
+**Created**: `backend/tests/test_ingest_validation.py`.
+
+**Modified**: `backend/app/api/main.py` (`IngestValidationError` +
+handler, `ingest_and_broadcast`'s validation rewritten: ragged-row
+try/except, zero-column check, `reduction_note` computation, pipeline
+try/except backstop), `sdk/iye/__init__.py` (`MIN_SAMPLES_FOR_REDUCTION`
+constant, `reduce_to_3d`'s zero-sample guard + small-`n_samples`
+truncation fallback, `cluster`'s `n_samples < 2` all-noise fallback),
+`sdk/iye/server.py` (`VectorFramePayload.reduction_note` additive field).
+
+## Remaining known gaps (deliberately not touched, and why)
+
+1. **UMAP's exact non-monotonic crash boundary was not characterized
+   precisely** — deliberately: it's scipy/umap-version-dependent and
+   fragile to pin exactly. `MIN_SAMPLES_FOR_REDUCTION = 5` is a
+   conservative reuse of an already-proven-safe constant, confirmed
+   empirically safe across the whole n=0..6 range tested, not a precise
+   characterization of UMAP's own internal boundary.
+2. **No backend categorical/text vectorization path** — not built, since
+   none can structurally be reached (Pydantic's numeric-only schema
+   blocks it upstream); flagged as scoped out rather than silently
+   skipped, per Phase 3 above.
+3. **The truncation fallback for `reduce_to_3d` is a crude, arbitrary
+   choice** (first 3 raw columns, no PCA/feature-selection) — acceptable
+   because it's clearly flagged via `reduction_note`, not passed off as a
+   real reduction, but a more principled small-`n` fallback (e.g. PCA)
+   was out of scope for a P0 stability fix.
+4. **The unrelated upload-rendering gap** (point cloud/beacons not
+   visually rendering for some uploaded datasets), first flagged
+   2026-07-10, confirmed present through 2026-07-14, **not
+   re-investigated this sprint** — out of scope for this bug, flagged
+   again so it isn't lost.
+
+## Commits ready for review
+
+```
+a4b6bad fix(backend): guard against zero-size arrays and non-numeric payloads in feature matrix pipeline
+```
+
+Pushed to `origin/main` along with the 13 prior local commits (`b805cfe`
+through `75d77a9`) — local and remote confirmed in sync at `a4b6bad`.
