@@ -19,7 +19,7 @@ import sys
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import httpx
 import numpy as np
@@ -45,6 +45,7 @@ for _p in [_project_root, _backend_dir, os.path.join(_project_root, "sdk")]:
 # ─── SDK Imports (after path setup) ──────────────────────────────────────────
 
 import iye  # type: ignore # noqa: E402
+from iye import encoding as iye_encoding  # type: ignore # noqa: E402
 from iye.server import Coordinate3D, VectorFramePayload  # type: ignore # noqa: E402
 
 from app.api.capture import capture_frame  # noqa: E402
@@ -290,13 +291,24 @@ class EncodingSummary(BaseModel):
 
 
 class MatrixUploadRequest(BaseModel):
-    """Flat-float or nested-float matrix payload for ingestion."""
+    """Flat-float or nested matrix payload for ingestion.
+
+    `matrix` accepts mixed cell types (not just float) — 2026-07-28 sprint:
+    a direct API/curl caller or an `iye.show()` script has no browser in
+    the loop to pre-encode categorical/text columns the way
+    frontend/src/canvas/upload/parseMatrix.ts does, so the backend now
+    detects non-numeric cells itself and routes them through
+    iye.encoding.vectorize_matrix (see ingest_and_broadcast). A fully
+    numeric matrix (the common case — browser uploads are already encoded
+    by the time they arrive) is unaffected: it takes the exact same fast
+    path as before this sprint.
+    """
     # Optional (not required) so a `matrix`-only request validates — the two
     # input modes are alternatives, per the docstring, not both-required.
     # Additive/backward-compatible: existing callers already send `data`.
     data: Optional[List[float]] = None
     dim: Optional[int] = 6          # feature dimension, default 6D metrics matrix
-    matrix: Optional[List[List[float]]] = None
+    matrix: Optional[List[List[Any]]] = None
     encoding_summary: Optional[EncodingSummary] = None
 
 # ─── REST Routes ──────────────────────────────────────────────────────────────
@@ -317,16 +329,38 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
     Ingest a 6D metrics matrix, reduce to 3D via UMAP, cluster via HDBSCAN,
     flag anomalies using Z-scores, then broadcast the frame to all /stream clients.
     """
+    # Populated only when this request's matrix contained non-numeric cells
+    # and we (not the browser's parseMatrix.ts) did the encoding ourselves —
+    # see the `else` branch below and Phase A of the 2026-07-28 sprint.
+    computed_encoding_summary: Optional[dict] = None
+
     if request.matrix is not None:
-        try:
-            data_2d = np.array(request.matrix, dtype=np.float64)
-        except ValueError as e:
-            # Ragged rows (inconsistent lengths) — numpy refuses to build a
-            # rectangular array and raises here, uncaught, before this fix.
+        row_lengths = {len(row) for row in request.matrix}
+        if len(row_lengths) > 1:
+            # Ragged rows (inconsistent lengths) — checked explicitly up
+            # front because vectorize_matrix (below) needs a rectangular
+            # column structure to classify columns at all.
             raise IngestValidationError(
-                detail=f"'matrix' rows must all have the same length: {e}",
+                detail=(
+                    f"'matrix' rows must all have the same length "
+                    f"(got lengths {sorted(row_lengths)})"
+                ),
                 stage="ingestion",
-            ) from e
+            )
+        if iye_encoding.is_fully_numeric(request.matrix):
+            # Fast path, unchanged from before this sprint: a browser
+            # upload has already been encoded client-side by the time it
+            # gets here, so every cell is already a real number.
+            data_2d = np.array(request.matrix, dtype=np.float64)
+        else:
+            # No browser in the loop for this request (direct API/curl call,
+            # or iye.show() called straight from a script) — parseMatrix.ts
+            # never ran, so do the same classify-and-encode pass here.
+            try:
+                data_2d, summary = iye_encoding.vectorize_matrix(request.matrix)
+            except iye_encoding.RaggedMatrixError as e:
+                raise IngestValidationError(detail=str(e), stage="ingestion") from e
+            computed_encoding_summary = summary.to_wire_dict()
         if data_2d.ndim != 2:
             raise IngestValidationError(
                 detail="'matrix' must be a 2-D array", stage="ingestion"
@@ -423,6 +457,14 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
         cluster_labels=labels.tolist(),
     )
 
+    # Prefer the browser's own encoding_summary (parseMatrix.ts already ran)
+    # when present; otherwise fall back to what we computed ourselves above
+    # for a non-browser caller. Never both — a request only ever takes one
+    # of the two paths.
+    encoding_summary_dict = (
+        request.encoding_summary.model_dump() if request.encoding_summary else computed_encoding_summary
+    )
+
     status = "ANOMALY" if anomaly_idx else "NOMINAL"
     payload = VectorFramePayload(
         frame_id      = frame_id,
@@ -438,7 +480,7 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
         explanation     = expl,
         axis_mapping    = None,
         temporal        = temporal_metrics.model_dump(),
-        encoding_summary = request.encoding_summary.model_dump() if request.encoding_summary else None,
+        encoding_summary = encoding_summary_dict,
         reduction_note   = reduction_note,
     )
 
@@ -447,11 +489,11 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
 
     if anomaly_idx:
         metrics_summary = str(data_2d[anomaly_idx[0]].tolist())
-        if request.encoding_summary is not None:
-            enc = request.encoding_summary
+        if encoding_summary_dict is not None:
+            enc = encoding_summary_dict
             metrics_summary += (
-                f" (Note: {enc.encoded_categorical_columns} of the {enc.total_columns} "
-                f"source column(s) are encoded categorical features — {enc.encoded_dims} "
+                f" (Note: {enc['encoded_categorical_columns']} of the {enc['total_columns']} "
+                f"source column(s) are encoded categorical features — {enc['encoded_dims']} "
                 f"of this vector's dimensions are encoded categories, not raw measurements.)"
             )
         _spawn_narrative_task(frame_id, metrics_summary)

@@ -2,12 +2,23 @@
 backend/tests/test_encoding_summary.py — additive encoding_summary field
 (2026-07-12 sprint, Phase 1c).
 
-The backend never computes encoding itself — categorical encoding happens
-entirely client-side (frontend/src/canvas/upload/parseMatrix.ts). The
-backend's only job is to (a) accept the optional encoding_summary on
-ingestion, (b) echo it back on the response payload unchanged, and (c) fold
-a note into the anomaly narrative prompt so the LLaMA text can say the data
-includes encoded categories, not raw measurements.
+For a browser-originated upload, the backend never computes encoding
+itself — categorical encoding happens client-side
+(frontend/src/canvas/upload/parseMatrix.ts) before the request is sent, and
+the backend's job for that path is exactly what this file tests: (a)
+accept the optional client-supplied encoding_summary on ingestion, (b) echo
+it back on the response payload unchanged, and (c) fold a note into the
+anomaly narrative prompt so the LLaMA text can say the data includes
+encoded categories, not raw measurements.
+
+Since the 2026-07-28 sprint, a request with no browser in the loop (a
+direct API/curl call, or iye.show() from a script) that sends a raw
+non-numeric matrix *does* get encoded by the backend itself, via
+iye.encoding.vectorize_matrix — see test_ingest_validation.py and
+test_backend_vectorization.py for that path. The two never overlap: a
+request either arrives pre-encoded with its own encoding_summary (this
+file), or arrives raw and gets a backend-computed one (the other files) —
+never both.
 """
 
 from __future__ import annotations

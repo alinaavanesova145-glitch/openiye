@@ -214,19 +214,59 @@ def detect_anomalies(
 _CANDIDATE_PORTS = [8000, 8050, 8222]
 _cached_active_port = None
 
+
+def _as_row_list(matrix: Any) -> Optional[list]:
+    """Best-effort coercion of `matrix` to a list-of-rows (each row itself a
+    list) for iye.encoding.vectorize_matrix, without assuming any particular
+    input container (plain nested lists/tuples, or a 2D numpy object array).
+    Returns None when `matrix` isn't row/column-shaped — e.g. a flat 1D list
+    of non-numeric values has no column structure to classify against."""
+    try:
+        rows = list(matrix)
+    except TypeError:
+        return None
+    if not rows:
+        return None
+    normalized = []
+    for row in rows:
+        if isinstance(row, str) or not hasattr(row, "__iter__"):
+            return None
+        normalized.append(list(row))
+    return normalized
+
+
 def show(matrix: Any) -> None:
     """
-    Ingest matrix metrics data, format it, scan local ports to detect the active 
+    Ingest matrix metrics data, format it, scan local ports to detect the active
     IYE server, and POST it to /api/canvas/vectors.
+
+    Non-numeric cells (categorical/text columns) are auto-encoded via
+    iye.encoding — the same classify-and-encode pass the browser's
+    parseMatrix.ts already runs on a dropped file, so a script calling
+    show() with mixed data gets equivalent treatment instead of a silent
+    failure (2026-07-28 sprint). Only attempted for row/column-shaped input
+    (a list of lists/tuples) — a flat 1D list of non-numeric values has no
+    column structure to classify against and is still rejected, logged.
     """
     global _cached_active_port
 
     import numpy as np
+    encoding_summary_payload: Optional[Dict[str, int]] = None
     try:
         arr = np.asarray(matrix, dtype=np.float64)
-    except Exception as e:
-        logger.error(f"Failed to parse matrix input: {e}")
-        return
+    except (ValueError, TypeError) as e:
+        rows = _as_row_list(matrix)
+        if rows is None:
+            logger.error(f"Failed to parse matrix input: {e}")
+            return
+        try:
+            from . import encoding as iye_encoding
+            encoded, summary = iye_encoding.vectorize_matrix(rows)
+        except Exception as encode_err:
+            logger.error(f"Failed to auto-encode non-numeric matrix input: {encode_err}")
+            return
+        arr = encoded
+        encoding_summary_payload = summary.to_wire_dict()
 
     if arr.ndim == 1:
         # Default to 6D if divisible by 6, else 3, else length
@@ -244,10 +284,12 @@ def show(matrix: Any) -> None:
         logger.error(f"show() expects 1D or 2D matrix, got shape {arr.shape}")
         return
 
-    payload = {
+    payload: Dict[str, Any] = {
         "data": flat_data,
         "dim": dim
     }
+    if encoding_summary_payload is not None:
+        payload["encoding_summary"] = encoding_summary_payload
 
     # Order ports trying the cached working port first
     ports = []

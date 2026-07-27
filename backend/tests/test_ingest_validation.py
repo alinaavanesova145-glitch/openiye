@@ -97,24 +97,48 @@ def test_flat_data_not_a_multiple_of_dim_rejected():
     assert "dim=6" in body["detail"]
 
 
-# ─── Non-numeric values — already rejected by Pydantic's own schema ───────────
-# (MatrixUploadRequest.matrix: List[List[float]] — confirmed empirically
-# that FastAPI/Pydantic reject non-float elements with their own automatic
-# 422 before this route's code ever executes. Not our contract's shape, but
-# still a clean 422, never a 500 — see the report's Phase 3 for why no
-# backend-side categorical/text handling is needed or was built.)
+# ─── Non-numeric values — now auto-encoded, not rejected ──────────────────────
+# UPDATED 2026-07-28 sprint. Before this sprint, MatrixUploadRequest.matrix
+# was typed List[List[float]], so FastAPI/Pydantic rejected non-float
+# elements with their own automatic 422 before this route's code ever ran —
+# the previous version of this test (quoted below) asserted exactly that.
+# `matrix` is now List[List[Any]]: a request with no browser in the loop
+# (direct API/curl call, or iye.show() from a script) gets the same
+# classify-and-encode pass frontend/src/canvas/upload/parseMatrix.ts already
+# runs for browser uploads, via iye.encoding.vectorize_matrix — see
+# backend/app/api/main.py's ingest_and_broadcast and docs/idealization_report.md,
+# 2026-07-28 sprint. Non-numeric values are no longer an error case at all
+# for this endpoint; they're a supported input that produces a 200 with a
+# computed encoding_summary.
+#
+# BEFORE (this exact test, prior to this sprint):
+#     def test_non_numeric_matrix_values_rejected_by_pydantic_before_reaching_our_code():
+#         response = client.post("/api/canvas/vectors", json={"matrix": [["a", "b", "c"]]})
+#         assert response.status_code == 422
+#         body = response.json()
+#         assert "detail" in body
+#         assert isinstance(body["detail"], list)
+#         assert any("matrix" in str(err.get("loc", [])) for err in body["detail"])
+#
+# AFTER (below): the same request now succeeds and auto-encodes.
 
 
-def test_non_numeric_matrix_values_rejected_by_pydantic_before_reaching_our_code():
+def test_non_numeric_matrix_values_now_auto_encoded_not_rejected():
+    """1 row x 3 columns, each cell a distinct single-row string column —
+    every column has exactly one category, so each one-hot-encodes to a
+    single dim with scale 1/sqrt(1) = 1.0."""
     response = client.post("/api/canvas/vectors", json={"matrix": [["a", "b", "c"]]})
-    assert response.status_code == 422
-    # Pydantic's own envelope shape (a list of per-field errors), distinct
-    # from our custom contract — asserted explicitly so a future change to
-    # either shape is caught.
+    assert response.status_code == 200
     body = response.json()
-    assert "detail" in body
-    assert isinstance(body["detail"], list)
-    assert any("matrix" in str(err.get("loc", [])) for err in body["detail"])
+    assert body["point_count"] == 1
+    assert body["coordinates"][0] == {"x": 1.0, "y": 1.0, "z": 1.0}
+    assert body["encoding_summary"] == {
+        "total_columns": 3,
+        "numeric_columns": 0,
+        "encoded_categorical_columns": 3,
+        "encoded_dims": 3,
+        "skipped_free_text": 0,
+    }
 
 
 # ─── Phase 1 bugs #3/#4: degenerate-but-nonzero sample counts ─────────────────
