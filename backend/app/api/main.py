@@ -23,8 +23,9 @@ from typing import List, Optional
 
 import httpx
 import numpy as np
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 # ─── Robust sys.path Setup ────────────────────────────────────────────────────
@@ -148,6 +149,42 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─── Structured ingest-validation errors ──────────────────────────────────────
+# 2026-07-16 sprint: transport succeeded but the payload has nothing usable
+# (empty, malformed, or degenerate after parsing/filtering) gets a flat,
+# structured 422 — never a raw 500 with a Python traceback. Plain
+# HTTPException(detail=...) always nests under an extra {"detail": ...}
+# wrapper in FastAPI's default handling, which doesn't match the flat
+# contract below, hence a dedicated exception + handler pair instead.
+
+
+class IngestValidationError(Exception):
+    """Raised anywhere in the ingestion → feature-matrix pipeline when the
+    payload has nothing usable to work with. `stage` identifies which part
+    of the pipeline made that call: ingestion (raw payload → array),
+    feature_matrix (array shape/size checks), or vectorization (the
+    UMAP/HDBSCAN/Z-score calls themselves, as a last-resort backstop for
+    anything the earlier precondition checks didn't anticipate)."""
+
+    def __init__(self, detail: str, stage: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.stage = stage
+
+
+@app.exception_handler(IngestValidationError)
+async def _ingest_validation_error_handler(_request, exc: IngestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": "empty_or_invalid_payload",
+            "status": 422,
+            "detail": exc.detail,
+            "stage": exc.stage,
+        },
+    )
+
 
 # ─── StreamHub ────────────────────────────────────────────────────────────────
 
@@ -281,31 +318,80 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
     flag anomalies using Z-scores, then broadcast the frame to all /stream clients.
     """
     if request.matrix is not None:
-        data_2d = np.array(request.matrix, dtype=np.float64)
+        try:
+            data_2d = np.array(request.matrix, dtype=np.float64)
+        except ValueError as e:
+            # Ragged rows (inconsistent lengths) — numpy refuses to build a
+            # rectangular array and raises here, uncaught, before this fix.
+            raise IngestValidationError(
+                detail=f"'matrix' rows must all have the same length: {e}",
+                stage="ingestion",
+            ) from e
         if data_2d.ndim != 2:
-            raise HTTPException(status_code=400, detail="'matrix' must be a 2-D array")
+            raise IngestValidationError(
+                detail="'matrix' must be a 2-D array", stage="ingestion"
+            )
     else:
         if not request.data:
-            raise HTTPException(status_code=400, detail="No matrix data provided")
+            raise IngestValidationError(
+                detail="No matrix data provided", stage="ingestion"
+            )
         d = request.dim or 6
         if len(request.data) % d != 0:
-            raise HTTPException(
-                status_code=400,
+            raise IngestValidationError(
                 detail=(
                     f"Flat data length ({len(request.data)}) "
                     f"is not a multiple of dim={d}"
                 ),
+                stage="ingestion",
             )
         n_samples = len(request.data) // d
         data_2d = np.array(request.data, dtype=np.float64).reshape(n_samples, d)
 
     if data_2d.shape[0] == 0:
-        raise HTTPException(status_code=400, detail="Empty sample set")
+        raise IngestValidationError(
+            detail="Uploaded payload contained no rows (empty sample set)",
+            stage="feature_matrix",
+        )
+    if data_2d.shape[1] == 0:
+        # Every row parsed but has zero columns (e.g. `"matrix": [[], []]`) —
+        # previously silently zero-padded into fabricated (0,0,0) geometry;
+        # this is exactly as "nothing usable" as zero rows.
+        raise IngestValidationError(
+            detail="Uploaded payload contained no numeric columns after parsing",
+            stage="feature_matrix",
+        )
 
-    # Pipeline: reduce → cluster → detect anomalies
-    coords            = iye.reduce_to_3d(data_2d)
-    labels            = iye.cluster(coords)
-    anomaly_idx, expl = iye.detect_anomalies(coords)
+    n_samples, n_features = data_2d.shape
+    reduction_note = None
+    if n_features > 3 and n_samples < iye.MIN_SAMPLES_FOR_REDUCTION:
+        reduction_note = (
+            f"UMAP reduction skipped: {n_samples} sample(s) is below the "
+            f"minimum of {iye.MIN_SAMPLES_FOR_REDUCTION} required for a "
+            f"stable reduction — coordinates are the first 3 raw feature "
+            f"columns (truncated), not a real dimensionality reduction."
+        )
+
+    # Pipeline: reduce → cluster → detect anomalies. The precondition checks
+    # above and inside reduce_to_3d/cluster handle every *known* degenerate
+    # shape without raising; this try/except is a narrow defense-in-depth
+    # backstop for anything genuinely unanticipated (e.g. a future numpy/umap/
+    # hdbscan version introducing a new edge case) — logged in full server-side
+    # so the real cause stays visible, never silently swallowed, but the
+    # client still gets a structured, actionable 422 instead of a raw 500.
+    try:
+        coords            = iye.reduce_to_3d(data_2d)
+        labels            = iye.cluster(coords)
+        anomaly_idx, expl = iye.detect_anomalies(coords)
+    except Exception as e:
+        logger.exception(
+            "Unexpected failure in reduce/cluster/detect_anomalies for a "
+            "%s-shaped payload", data_2d.shape
+        )
+        raise IngestValidationError(
+            detail=f"Vectorization failed unexpectedly: {e}",
+            stage="vectorization",
+        ) from e
 
     # Decoupling gate: no await on the Ollama routine happens on this hot path.
     # Anomaly frames broadcast with explanation=None immediately; the LLaMA
@@ -353,6 +439,7 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
         axis_mapping    = None,
         temporal        = temporal_metrics.model_dump(),
         encoding_summary = request.encoding_summary.model_dump() if request.encoding_summary else None,
+        reduction_note   = reduction_note,
     )
 
     # Broadcast cleanly to our explicit stream endpoint

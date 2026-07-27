@@ -35,6 +35,18 @@ _HDBSCAN_MIN_CLUSTER_SIZE: int = 5
 _UMAP_COMPONENTS: int = 3
 _UMAP_RANDOM_STATE: int = 42
 
+# Minimum sample count required before attempting a real UMAP reduction.
+# Empirically (see docs/idealization_report.md, 2026-07-16 sprint, Phase 1
+# diagnosis), UMAP's failure mode for small n is *non-monotonic* and
+# scipy/umap-internals-dependent: n_samples=1 succeeds, 2-4 raise (a bare
+# `.max()` on a zero-size internal sparse-graph array, or a scipy.linalg.eigh
+# "k >= N" TypeError depending on n), then 5+ succeeds again. That boundary
+# isn't a stable contract to characterize precisely or test against long
+# term. Rather than chase it, this reuses the same conservative "minimum
+# meaningful sample count" already defined for HDBSCAN's min_cluster_size —
+# confirmed safe for both in the same diagnosis pass.
+MIN_SAMPLES_FOR_REDUCTION: int = _HDBSCAN_MIN_CLUSTER_SIZE
+
 # ─── Dimensionality Reduction ─────────────────────────────────────────────────
 
 
@@ -43,13 +55,28 @@ def reduce_to_3d(data: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
     Safely reduce high-dimensional data to 3 components.
 
     - If features <= 3: zero-pad to exactly 3 columns (raw pass-through).
-    - If features > 3:  apply UMAP with n_components=3, random_state=42.
+    - If features > 3 and n_samples >= MIN_SAMPLES_FOR_REDUCTION: apply UMAP
+      with n_components=3, random_state=42.
+    - If features > 3 but n_samples < MIN_SAMPLES_FOR_REDUCTION: UMAP's
+      spectral embedding is not safe at this sample count (see
+      MIN_SAMPLES_FOR_REDUCTION) — fall back to truncating to the first 3
+      columns instead of a real reduction. This is a crude, arbitrary
+      fallback (no PCA/feature-selection, just positional truncation) and
+      callers that care should check the sample count themselves beforehand
+      to surface that a fallback occurred (see
+      backend/app/api/main.py's use of this same constant).
 
     Args:
         data: 2D array of shape (n_samples, n_features).
 
     Returns:
         2D array of shape (n_samples, 3).
+
+    Raises:
+        ValueError: if `data` isn't 2D, or has zero samples (n_samples == 0).
+        Callers ingesting untrusted payloads should check for this rather
+        than let it propagate — see backend/app/api/main.py's feature-matrix
+        shape checks.
     """
     if data.ndim != 2:
         raise ValueError(
@@ -57,6 +84,9 @@ def reduce_to_3d(data: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         )
 
     n_samples, n_features = data.shape
+
+    if n_samples == 0:
+        raise ValueError("reduce_to_3d requires at least 1 sample, got 0")
 
     if n_features == 3:
         return data.astype(np.float64, copy=True)
@@ -67,7 +97,12 @@ def reduce_to_3d(data: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         padded[:, :n_features] = data
         return padded
 
-    # features > 3 → UMAP reduction
+    if n_samples < MIN_SAMPLES_FOR_REDUCTION:
+        # Too few samples for UMAP's spectral embedding to run safely —
+        # truncate to the first 3 features instead of crashing.
+        return data[:, :3].astype(np.float64, copy=True)
+
+    # features > 3, enough samples → UMAP reduction
     import umap  # Lazy import for fast SDK load time
 
     reducer = umap.UMAP(
@@ -85,12 +120,25 @@ def cluster(coords: NDArray[np.float64]) -> NDArray[np.intp]:
     """
     Apply HDBSCAN density-based clustering to 3D coordinates.
 
+    HDBSCAN itself raises for n_samples < 2 (0 samples: sklearn's own "at
+    least 1 required"; exactly 1 sample: "k must be less than or equal to
+    the number of training points" — there's no neighbor to define a
+    distance to). 2-4 points already succeed and correctly return all-noise
+    labels (below min_cluster_size). Fewer than 2 points is the same
+    "nothing to cluster" case, just below HDBSCAN's own crash threshold
+    instead of its min_cluster_size — so it gets the identical, well-defined
+    answer HDBSCAN already gives for 2-4 points, without calling into
+    HDBSCAN at all.
+
     Args:
         coords: 2D array of shape (n_samples, 3).
 
     Returns:
         1D integer array of cluster labels. -1 indicates noise.
     """
+    if coords.shape[0] < 2:
+        return np.full(coords.shape[0], -1, dtype=np.intp)
+
     import hdbscan  # Lazy import for fast SDK load time
 
     clusterer = hdbscan.HDBSCAN(min_cluster_size=_HDBSCAN_MIN_CLUSTER_SIZE)
@@ -229,4 +277,5 @@ __all__ = [
     "reduce_to_3d",
     "cluster",
     "detect_anomalies",
+    "MIN_SAMPLES_FOR_REDUCTION",
 ]

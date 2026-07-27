@@ -80,6 +80,17 @@ class VectorFramePayload(BaseModel):
             "numeric-only frames."
         ),
     )
+    reduction_note: Optional[str] = Field(
+        default=None,
+        description=(
+            "Additive (2026-07-16 sprint) — non-null only when the sample "
+            "count was too low for a real UMAP reduction and the backend "
+            "fell back to truncating to the first 3 raw feature columns "
+            "instead (see iye.reduce_to_3d's MIN_SAMPLES_FOR_REDUCTION). "
+            "Null whenever a real reduction (or the <=3-feature passthrough) "
+            "was used."
+        ),
+    )
 
 
 # ─── StreamHub ─────────────────────────────────────────────────────────────────
