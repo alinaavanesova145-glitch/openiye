@@ -2366,3 +2366,240 @@ fde69f1 feat: B2B landing page with self-contained interactive live demo
 ```
 
 Ready to push to `origin/main` along with all prior commits.
+
+# 2026-07-31 — Sprint: named-feature grounding for anomaly explanations
+
+Closes a gap the 2026-07-30 landing-page sprint surfaced but deliberately
+didn't fix: `/api/canvas/anomaly/explain` was grounded in real z-score
+math but never in real column names, so a genuine explanation said "the
+x-axis, a raw measured feature" instead of "temperature" — even though
+the browser/backend had the original column name the whole time, until it
+got dropped partway through the pipeline.
+
+## Phase 1 — Where the name was lost
+
+Traced two independent gaps:
+
+1. **`frontend/src/canvas/upload/parseMatrix.ts`'s `buildFeatureMatrix`**
+   tracked names only for *encoded categorical* columns
+   (`EncodedColumnInfo.name`, inside `EncodingSummary.columns`) — numeric
+   columns' header names were read (`columnNames[c]`) but never stored
+   anywhere. `sdk/iye/encoding.py`'s `vectorize_matrix` had the identical
+   gap on the Python side.
+2. **Even the categorical names that *were* tracked never crossed the
+   wire** — `backend/app/api/main.py`'s `EncodingSummary` Pydantic model
+   (established 2026-07-12 sprint) intentionally omits per-column detail,
+   sending only aggregate counts. And the fully-numeric fast path (the
+   *common* case — a browser upload is already encoded numeric by the
+   time it reaches the backend) bypasses `vectorize_matrix` entirely, so
+   it never had *any* names available server-side, regardless.
+
+One-hot expansion compounds this: a `region` column with 3 categories
+becomes 3 matrix columns (`region_east`/`region_west`/`region_north`
+conceptually) — attribution needs to map back to `region`, the one
+original field, not any of the 3 internal encoded dimensions.
+
+## Phase 2 — Threading the mapping
+
+- **`EncodingSummary.expanded_column_names`** (both the TS `EncodingSummary`
+  and the Python dataclass) — one name per FINAL output matrix column,
+  built alongside `output_columns` in the same loop: numeric columns push
+  their own name once, a one-hot field's N category columns all push that
+  field's name N times, a frequency-encoded field pushes its name once,
+  a skipped free-text column pushes nothing (no output column, no name).
+- **`MatrixUploadRequest.column_names`** (new, optional) — one name per
+  column *as submitted*: pre-encoding raw names for the backend-auto-encode
+  path (passed straight into `vectorize_matrix`, which returns the
+  expanded names), or already-post-encoding names for the browser-
+  pre-encoded fast path (used as-is, no further expansion needed since the
+  browser already did it). One field, two natural interpretations,
+  because both describe "the columns actually present in `request.matrix`
+  right now."
+- **Defensive handling** (Phase 1.2/2.3's explicit ask): a length mismatch
+  against the actual column count — either at the `vectorize_matrix` raw-
+  column level or the final-matrix level — degrades to positional
+  `col_N` defaults (numeric fast path) or is excluded from attribution
+  entirely (see Phase 3), never a crash. An individual empty/whitespace-only
+  name is sanitized to `col_N` for *just* that column, not the whole list.
+  Duplicate names across genuinely unrelated columns are accepted as-is
+  (they merge into one attribution bucket) — a documented, accepted
+  imprecision, not solved further; true accidental name collisions from a
+  real file are rare enough not to warrant the extra complexity.
+
+## Phase 2 (attribution computation) — `iye.compute_feature_attributions`
+
+Computed on `data_2d` — the feature matrix as it enters `reduce_to_3d`,
+**before** any dimensionality reduction — not on the reduced 3D output
+`compute_z_scores`/severity-coloring already use. This is a deliberate,
+load-bearing distinction: after a *real* UMAP embedding, an output axis is
+a nonlinear mixture of every input column, so there is no principled
+"axis 2 is column 3" mapping at all. A per-*original-column* Z-score,
+computed pre-reduction, stays well-defined regardless of whether reduction
+happened — this is what makes named attribution possible even for
+high-dimensional data that gets UMAP-reduced, not just the <=3-feature
+passthrough case `axes_are_raw_features` already covered.
+
+Per point: groups matrix columns by name (a one-hot field's several
+columns collapse to one group), takes the max |z| within each group,
+sorts descending, keeps the top 2 (`FEATURE_ATTRIBUTION_TOP_K`). An empty
+result for a point is the explicit "no real names were available" signal,
+carried all the way to the frontend and back.
+
+**Auto-generated `col_N` placeholder names are never used for
+attribution**, even though `vectorize_matrix` always returns *some* name
+internally for its own bookkeeping — `main.py` only trusts
+`expanded_column_names` for attribution when the caller actually supplied
+`column_names`, otherwise passing `None` through, so a request with no
+real names gets the honest axis-based fallback rather than a
+misleadingly-specific-looking `"the col_3 feature"`.
+
+## Phase 3 — Prompt construction
+
+`_build_point_explanation_summary` gained a priority branch: when
+`AnomalyExplainRequest.feature_attributions` is non-empty, cites the named
+field(s) — `"Primarily driven by the temperature feature (|z|=4.35), with
+a secondary contribution from vibration (|z|=3.82)."` — otherwise falls
+through to the **exact prior axis-based phrasing, byte-for-byte
+unchanged**, confirmed via a dedicated non-regression test
+(`test_prompt_falls_back_to_axis_phrasing_when_no_attributions_unchanged_behavior`).
+Verified live against a real local Ollama instance: the model correctly
+incorporated the injected feature names into its generated prose
+("...significant deviation in the temperature feature (|z|=3.87)...
+compounded by a secondary contribution from vibration...").
+
+## Phase 4 — SDK parity
+
+`iye.explain_anomaly()` gained an optional `feature_attributions`
+parameter, threaded into the request payload only when provided (omitted
+entirely otherwise, so existing callers' requests are byte-for-byte
+unchanged). Documented where a headless script would source this from:
+`iye.compute_feature_attributions` directly, or a frame broadcast over
+`iye.server`'s WebSocket, which now carries `point_feature_attributions`
+per point.
+
+## Phase 5 — Demo fixture reconciliation
+
+`demoFixture.ts`'s three canned narratives were rewritten from generic
+axis phrasing ("the x-axis, a raw measured feature") to named-feature
+phrasing ("the temperature feature"), using a new `DEMO_AXIS_NAMES`
+mapping (`x→temperature, y→vibration, z→pressure` — the same mapping a
+real `column_names=[...]` request would establish for this exact
+3-column fixture) and a `computeDemoFeatureAttributions` helper that
+mirrors `iye.compute_feature_attributions`'s exact ranking (top-2,
+descending |z|). Per the task's explicit instruction, **no new
+data/structure was added** — the same z-scores, same magnitudes, same
+cluster/noise status; only the wording changed, since the fixture no
+longer needs to undersell what the real product now does.
+
+## Existing test changes — quoted, not silently altered
+
+`frontend/src/landing/demoFixture.test.ts`'s
+`'narrative text cites a specific deviating axis and magnitude, not
+generic filler'` asserted the *old* generic phrasing and broke once the
+narratives were reconciled.
+
+BEFORE:
+```ts
+it('narrative text cites a specific deviating axis and magnitude, not generic filler', () => {
+  for (const text of Object.values(DEMO_NARRATIVES)) {
+    expect(text).toMatch(/axis/)
+    expect(text).toMatch(/\|z\|=\d/)
+  }
+})
+```
+
+AFTER (renamed, asserts a real sensor name instead of the word "axis",
+and explicitly asserts the old phrasing is gone):
+```ts
+it('narrative text cites a specific named feature and magnitude, not generic filler', () => {
+  const sensorNames = Object.values(DEMO_AXIS_NAMES)
+  for (const text of Object.values(DEMO_NARRATIVES)) {
+    expect(sensorNames.some((name) => text.includes(name))).toBe(true)
+    expect(text).toMatch(/\|z\|=\d/)
+    expect(text).not.toMatch(/x-axis|y-axis|z-axis/)
+  }
+})
+```
+
+## New tests
+
+**Backend** (`backend/tests/test_feature_attribution.py`, 22 tests):
+`expanded_column_names` correctness (numeric, one-hot expansion, frequency,
+freetext exclusion, missing/wrong-length/blank name fallbacks),
+`compute_feature_attributions`'s grouping/ranking/defensive-fallback
+behavior, full `/api/canvas/vectors` → `/api/canvas/anomaly/explain`
+pipeline tests with real `column_names`, and prompt-construction tests for
+both the named-feature branch and the unchanged fallback branch.
+
+Per Phase 6's ask for a "text-embedding-derived columns" attribution
+test: **no text-embedding path exists in this codebase** (deliberately
+not built, per the 2026-07-28 sprint) — substituted the structurally
+equivalent case that does exist, frequency encoding (one field → one
+derived non-raw numeric column), flagged explicitly rather than silently
+reinterpreted.
+
+**Frontend** (14 new tests across 4 files): `parseMatrix.ts`'s
+`featureNames` correctness (numeric, one-hot repetition, frequency,
+freetext exclusion, headerless-JSON/NPY honest-empty cases) —
+`useVectorStream.ts`'s `point_feature_attributions` parsing (real payload,
+absent-field default, malformed-entry drop) — `useVectorDiagnostics.ts`
+sending `column_names` on upload — `demoFixture.test.ts`'s 4 new
+attribution-consistency tests (ranking order, valid sensor names, top
+attribution matches actual peak |z|, narrative names the top-attributed
+feature).
+
+## Full verification
+
+| Check | Result |
+|---|---|
+| `pytest tests/` (backend) | 124 passed (102 → 124: 22 new, 1 new file) |
+| `ruff check .` (backend) | All checks passed |
+| `tsc --noEmit` (frontend) | clean |
+| `eslint . --max-warnings 0` (frontend) | clean |
+| `vitest run` (frontend) | 148 passed (134 → 148: 14 new across 4 files) |
+| `vite build` (frontend) | clean — both `index.html` and `landing.html` |
+
+## Files touched this sprint
+
+**Created**: `backend/tests/test_feature_attribution.py`.
+
+**Modified**: `backend/app/api/main.py` (`column_names` request field,
+`feature_names_for_attribution` resolution in both ingest branches,
+`point_feature_attributions` wiring, `AnomalyExplainRequest.feature_attributions`,
+named-feature prompt branch), `sdk/iye/__init__.py`
+(`FeatureAttribution`, `compute_feature_attributions`, `explain_anomaly`
+parity param), `sdk/iye/encoding.py` (`expanded_column_names` tracking,
+`column_names` defensive sanitization), `sdk/iye/server.py`
+(`FeatureAttribution` model, `point_feature_attributions` field),
+`frontend/src/canvas/upload/parseMatrix.ts` (`featureNames` tracking),
+`frontend/src/canvas/math/useVectorStream.ts` (`FeatureAttribution` type,
+`point_feature_attributions` parsing), `frontend/src/canvas/math/
+useVectorDiagnostics.ts` (`column_names` sent on upload),
+`frontend/src/canvas/math/useAnomalyExplain.ts`
+(`featureAttributions` threaded into the request), `frontend/src/canvas/
+VectorViewport.tsx` (prop threading through `AnomalyBeacon`/
+`AnomalyBeacons`/`TacticalVectorField`), `frontend/src/landing/
+{DemoWidget,demoFixture,useFixtureAnomalyExplain}.ts` (fixture
+reconciliation), plus the test files listed above.
+
+## Remaining known gaps (deliberately not touched, and why)
+
+1. **Duplicate column names across unrelated fields merge into one
+   attribution bucket** — accepted imprecision, not solved; genuine name
+   collisions in real uploaded data are rare and disambiguating them
+   (e.g. auto-suffixing) wasn't judged worth the added complexity.
+2. **The flat `data`+`dim` numeric-telemetry path has no `column_names`
+   support** — consistent with the 2026-07-28 sprint's scoping decision
+   that this path is telemetry-shaped with no column semantics; not
+   revisited here.
+3. **No text-embedding attribution test** — substituted frequency
+   encoding, the closest structurally-equivalent case that actually
+   exists; see Phase 6 above.
+
+## Commits ready for review
+
+```
+12445c9 fix(backend): thread named features into anomaly explanations
+```
+
+Ready to push to `origin/main` along with all prior commits.
