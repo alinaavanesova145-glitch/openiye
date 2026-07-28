@@ -2189,3 +2189,180 @@ DiagnosticSidebar.test.tsx` (fixture, quoted above).
 ```
 
 Ready to push to `origin/main` along with all prior commits.
+
+# 2026-07-30 — Sprint: B2B landing page with self-contained interactive live demo
+
+Go-to-market sprint, not engine work — `backend/` and `sdk/` are untouched
+(confirmed via `git status` before committing).
+
+## Phase 1 — Audit findings
+
+1. **Routing**: no router exists — `frontend/index.html` boots directly
+   into `src/main.tsx` → `App.tsx`, no `react-router-dom`, no multi-page
+   Vite config. There was nothing to "restructure"; a new route needed to
+   be added, not moved into. Chose Vite's native multi-page build (a
+   second HTML entry, `landing.html` → `src/landing/main.tsx`) over adding
+   a router dependency — zero new dependencies, and critically, a real
+   separate HTML document means OG/Twitter meta tags are in the actual
+   served HTML for link-unfurling bots that don't execute JS, not
+   client-injected after hydration. `index.html`/`App.tsx` are completely
+   untouched; verified via `git diff` showing zero changes to either.
+2. **Reusable components**: `TacticalVectorField` (beacon rendering,
+   click handling, severity color/size, hover tooltip) and the per-point
+   narrative panel were previously private to `VectorViewport.tsx`.
+   Exported both (`TacticalVectorField` as-is; extracted the narrative
+   panel's inline JSX into a new `PointNarrativePanel` component) so the
+   demo renders the literal same code the real product does, not a
+   parallel reimplementation that would drift out of visual sync over
+   time. `VectorViewport`'s own default export and behavior are unchanged
+   — confirmed via the full existing frontend suite staying green
+   through the refactor before any new code was added.
+3. **Contact/CRM infra**: grepped the whole repo for mailto/waitlist/
+   Calendly/HubSpot/Mailchimp/Typeform/CRM — none exists. Used a
+   clearly-labeled `mailto:hello@openiye.com` placeholder per the task's
+   own suggested option; **this address has not been verified to be a
+   real, monitored inbox** — flagged below, not silently assumed working.
+4. **Deployment target**: no `vercel.json`/`netlify.toml`/`Dockerfile`/CI
+   config exists anywhere. "openiye.com" appears only as the npm package
+   name in `package-lock.json`, not a configured deploy target. **No real
+   deployment infrastructure exists** — flagged below; this sprint ships
+   the page, not a live URL.
+
+## Phase 2 — Design system
+
+Background `#0a0a0d` (pitch-black with slight depth, vs. the app shell's
+pure `#000000`); accents reuse the product's existing `#ffb6c1` blush-pink
+and `#5fd9e8` cyan verbatim rather than inventing new ones.
+
+Contrast computed via a WCAG relative-luminance script (not eyeballed):
+
+| Foreground | Background | Ratio | AA normal text (4.5:1) |
+|---|---|---|---|
+| `#ffb6c1` (primary pink) | `#0a0a0d` | **11.97:1** | pass |
+| `#5fd9e8` (cyan accent) | `#0a0a0d` | **11.84:1** | pass |
+| `#ffffff` (white body text) | `#0a0a0d` | **19.77:1** | pass |
+| `#ff2b3d` (existing anomaly red, decorative only) | `#0a0a0d` | 5.33:1 | pass |
+
+The primary pink clears AA by more than 2.5x even at normal text size, so
+**no separate lightened variant was needed** — the existing saturated
+tone is used directly for CTAs, headline highlights, and body accents.
+
+## Phase 3 — Demo widget
+
+**Fixture** (`demoFixture.ts`): 3-sensor industrial equipment telemetry
+(temperature/vibration/pressure), 27 points — 24 nominal across two
+equipment-line clusters, 3 illustrative anomalies (a joint temp+vibration
+spike consistent with bearing wear, an isolated pressure spike, and a
+broad uniform deviation across all three sensors). Deliberately exactly 3
+dimensions: the real `reduce_to_3d` treats <=3-feature data as a raw
+passthrough (no UMAP), so this fixture's `axesAreRawFeatures: true` is
+honest, not asserted for convenience.
+
+**Narrative honesty decision** (the one judgment call worth flagging
+explicitly): the real `/api/canvas/anomaly/explain` endpoint's prompt
+grounding cites *generic* axis references ("the x-axis, a raw measured
+feature") — it does not thread column names like "temperature" into the
+prompt today (verified in `main.py`'s `_build_point_explanation_summary`,
+prior sprint). Naming actual sensors in the demo's canned narratives would
+have made the demo *more impressive than what a real visitor would
+actually get* from the real product on equivalent data — closing that gap
+properly (threading real column names end-to-end) is a genuine, multi-file
+engine change out of scope for a go-to-market sprint. Chose honesty over
+polish: narrative text stays scoped to the exact phrasing style/content
+the real endpoint produces (dominant axis, magnitude, cluster status);
+sensor names are conveyed only as plain UI caption text
+(`DEMO_AXIS_CAPTION`), never attributed to the AI-generated text itself.
+
+**Interaction**: `useFixtureAnomalyExplain` implements the identical
+`AnomalyExplainResult` interface `useAnomalyExplain` does (`explainState`/
+`explainPoint`/`dismiss`), so `TacticalVectorField`/`PointNarrativePanel`
+work completely unmodified — a 900ms simulated delay gives the same
+"generating…" moment feel; UI never claims it's a live model call.
+
+## Phase 5 — Performance, responsiveness, SEO
+
+- `DemoWidget` (and its `TacticalVectorField`/three.js dependency chain)
+  is `React.lazy`-loaded from `LandingApp`, exact same pattern
+  `App.tsx` already uses for the real product — confirmed via the build
+  output: `landing-*.js` (6.00 kB) and `DemoWidget-*.js` (5.64 kB) are
+  separate chunks from the 993 kB `vendor-3d` chunk, which both entries
+  share without duplication.
+- Responsive breakpoints at 860px/600px (2-column → 1-column grids,
+  reduced demo canvas height, stacked CTA buttons); OrbitControls
+  supports touch out of the box so the demo stays interactive on mobile
+  rather than needing a separate simplified mode.
+- SEO/OG/Twitter card meta tags in `landing.html`'s actual served HTML
+  (title, description, `og:*`, `twitter:*`). **No `og:image`** — no real
+  1200×630 preview asset exists, and SVG `og:image` support is unreliable
+  on LinkedIn/Twitter specifically; shipping a broken/unreliable image
+  reference was judged worse than omitting it. Flagged below.
+
+## Verification boundary
+
+Same documented limitation as the prior sprint and this codebase's own
+`VectorViewport.memo.test.tsx`/`App.suspense.test.tsx`: react-three-fiber's
+`<Canvas>` cannot mount under jsdom (no real WebGL context). `LandingApp`'s
+tests mock `./DemoWidget` (same pattern `App.suspense.test.tsx` already
+established for exactly this reason) to test the page's real static
+content/CTAs/copy; `DemoWidget`'s own interactive behavior is proven via
+`useFixtureAnomalyExplain.test.ts` (state machine, stale-response
+handling) and `demoFixture.test.ts` (data integrity — every anomaly index
+has a narrative, every anomaly exceeds the real 2.5σ threshold, every
+nominal point stays under it). No browser was used to visually confirm
+the final rendered page — dev server was started and both entries curled
+successfully (200 OK, correct meta tags in the raw HTML), but an actual
+rendered/visual check was not performed, consistent with this environment
+having no browser-automation tool available.
+
+## Full verification
+
+| Check | Result |
+|---|---|
+| `pytest tests/` (backend) | 102 passed — **unchanged**, confirmed additive-only sprint |
+| `vitest run` (frontend) | 134 passed (113 → 134: 21 new across 3 new files) |
+| `tsc --noEmit` (frontend) | clean |
+| `eslint . --max-warnings 0` (frontend) | clean |
+| `vite build` (frontend) | clean — both `index.html` and `landing.html` emitted |
+
+No existing test assertions were modified this sprint.
+
+## Files touched this sprint
+
+**Created**: `frontend/landing.html`,
+`frontend/src/landing/{LandingApp,DemoWidget,main}.tsx`,
+`frontend/src/landing/{demoFixture,useFixtureAnomalyExplain}.ts` (+tests),
+`frontend/src/landing/LandingApp.test.tsx`, `frontend/src/landing/landing.css`.
+
+**Modified**: `frontend/src/canvas/VectorViewport.tsx` (exported
+`TacticalVectorField`/`BeaconTooltipInfo`/`TacticalFieldProps`, extracted
+`PointNarrativePanel`, zero behavior change to the default export),
+`frontend/vite.config.ts` (additive multi-page `rollupOptions.input`).
+
+## Remaining known gaps (deliberately flagged, not silently shipped as finished)
+
+1. **Contact mechanism is an unverified placeholder** — `mailto:
+   hello@openiye.com` has not been confirmed to be a real, monitored
+   inbox. No form, no CRM, no waitlist. Needs real infrastructure (a
+   verified inbox at minimum, ideally a proper form + CRM) before launch.
+2. **No deployment target configured** — no hosting, no CI/CD, no domain
+   DNS confirmed pointing anywhere. This sprint ships a buildable page,
+   not a live URL. `landing.html`'s production placement (bare domain
+   root vs. a `/landing` path) is a deploy-time decision not made here.
+3. **No `og:image`** — LinkedIn/Twitter link previews will show text
+   only, no preview image, until a real 1200×630 PNG/JPG asset is
+   designed and added.
+4. **No fabricated social proof, customer counts, or urgency claims were
+   included** — confirmed via a dedicated regression test
+   (`LandingApp.test.tsx`'s forbidden-phrase guard) asserting none of
+   "trusted by," "testimonial," customer-count patterns, or false-scarcity
+   phrasing appear anywhere in the rendered page.
+5. **No actual browser-rendered visual confirmation** — see "Verification
+   boundary" above.
+
+## Commits ready for review
+
+```
+fde69f1 feat: B2B landing page with self-contained interactive live demo
+```
+
+Ready to push to `origin/main` along with all prior commits.
