@@ -1949,3 +1949,243 @@ accuracy).
 
 Pushed to `origin/main` along with all prior commits — local and remote
 confirmed in sync at `59f4b73`.
+
+# 2026-07-29 — Sprint: interactive LLM narrative tooltips for per-point anomaly explanation
+
+## Phase 1 — Audit findings
+
+The prompt claimed "a task in progress referencing an IYE Anomaly Engine"
+with existing scaffolding to port/extend. Grepped `backend/app`,
+`frontend/src`, `sdk` for "explain"/"Anomaly Engine"/"anomaly_engine" —
+found nothing beyond the app's own title string
+(`FastAPI(title="IYE Anomaly Detection Engine", ...)`) and unrelated
+"explainability text" doc comments. No such scaffolding exists; treated as
+a false premise in the prompt, not a blocker — unlike the prior sprint's
+audit finding, here there genuinely was new work to build, just not the
+work the prompt assumed already existed.
+
+What *does* exist and was extended, not duplicated:
+- **`generate_anomaly_explanation`** (`backend/app/api/main.py`) — the
+  Ollama HTTP call, prompt template, and `_llm_status` tracking. Reused
+  as-is for the new endpoint; only gained an optional `timeout` parameter
+  (default 10.0s unchanged for its existing fire-and-forget caller).
+- **`_narrate`/`_spawn_narrative_task`/`_narrate_semaphore`** — fire-and-
+  forget task machinery for the automatic, first-anomaly-only, per-*frame*
+  narrative. Deliberately **not** reused for the new per-*point* endpoint:
+  that machinery exists specifically to decouple Ollama's latency from the
+  ingest hot path for a narrative nobody synchronously waits on. A user
+  clicking a point *is* synchronously waiting, so this is a direct
+  request/response instead.
+- **`useVectorStream.ts`** — audited per the prompt's explicit instruction
+  to check its purpose before extending it. It's the passive `/stream`
+  WebSocket ingestion hook: parses broadcast `frame`/`narrative` messages,
+  no request/response correlation mechanism exists on it. Critically, the
+  backend's `StreamHub.broadcast_text` fans every message out to **all**
+  connected clients — extending this channel for click-triggered
+  per-point explanations would leak one user's clicked-point answer to
+  every other browser tab watching the same stream. This ruled out
+  WebSocket reuse entirely; the new endpoint is a plain REST POST.
+- **Existing beacon tooltip** (`VectorViewport.tsx`'s `AnomalyBeacon`) —
+  hover-only today, and its `tooltipInfo` is identical across *every*
+  beacon in a frame (frame-level `temporal`/`explanation`/`status`, not
+  per-point) — meaning hovering any of several anomaly beacons in one
+  frame showed the same text, always describing only the frame's first
+  anomalous point. This sprint's per-point endpoint fixes that directly.
+- **Severity encoding** — audited and confirmed absent: every anomaly
+  beacon rendered identically (same color, same base size); only the
+  *pulse animation* varied, and only by frame-level temporal stats, never
+  by an individual point's own severity.
+
+## Phase 2 — Backend
+
+- **`iye.compute_z_scores`** (`sdk/iye/__init__.py`) — extracted from
+  `detect_anomalies`'s internal computation (kept `detect_anomalies`'s own
+  signature unchanged, since two other call sites unpack its 2-tuple and
+  changing that would have broken them). Used to add `point_z_scores`
+  (one `[x,y,z]` Z-score triple per point, parallel to `coordinates`) and
+  `axes_are_raw_features` (true for the `<=3`-feature passthrough or
+  small-`n` truncation fallback; false only after a real UMAP embedding)
+  to `VectorFramePayload` — both additive, grounding both severity
+  encoding and the explain prompt honestly (never claims a UMAP-embedded
+  axis is "the 2nd measured feature").
+- **`POST /api/canvas/anomaly/explain`** — stateless by design: no
+  server-side frame/point cache exists (frames are broadcast-only, and the
+  product already supports a live-streamed use case where "the uploaded
+  file" isn't even a coherent concept to look up), so the frontend echoes
+  back exactly the point data it already has (`point_index`, `coordinates`,
+  `z_scores`, `cluster_label`, `axes_are_raw_features`) rather than the
+  backend needing to remember anything between requests.
+- **Grounding**: `_build_point_explanation_summary` cites the point's
+  actual coordinates, per-axis Z-scores, the *dominant* deviating axis
+  (worded as "a raw measured feature" or "a UMAP-reduced dimension" per
+  `axes_are_raw_features`), and cluster membership (noise vs. a specific
+  cluster id) — verified live against a real local Ollama instance; the
+  model's response correctly referenced the injected point index, the
+  dominant axis, and the noise/cluster classification.
+- **Errors**: new `AnomalyExplainError` + handler, same flat JSON shape as
+  the existing `IngestValidationError` convention (`error`/`status`/
+  `detail`/`stage`) but its own `error: "explain_failed"` tag — a
+  different failure domain (LLM unavailability, not payload validation)
+  doesn't belong under `"empty_or_invalid_payload"`. `stage="validation"`
+  for a malformed request (e.g. negative `point_index`), `stage=
+  "llm_unavailable"` for unreachable/non-200/timeout. Failure detection
+  compares the returned string against a named `LLM_FALLBACK_TEXT`
+  constant rather than the global `_llm_status` flag — the latter is
+  shared/racy across concurrent requests (a concurrent frame's unrelated
+  narrative task could flip it) and wouldn't reliably reflect whether
+  *this specific* request got a real answer or the fallback.
+- **Timeout**: `EXPLAIN_LLM_TIMEOUT_SECONDS = 30.0`, vs the existing
+  fire-and-forget path's 10.0s default — a user who clicked is actively
+  waiting, and Ollama generation empirically takes ~15-23s on this
+  hardware (confirmed live: 23.9s for one isolated call). Verified this
+  budget can still be exceeded under **concurrent** load (an explain call
+  racing an unrelated frame's auto-narrative for the same local Ollama
+  instance can queue behind it) — noted as a known limitation below, not
+  fixed this sprint.
+
+## Phase 2.4 — SDK
+
+`iye.explain_anomaly()` mirrors the endpoint for headless Python callers.
+Refactored `show()`'s inline port-scan loop into a shared
+`_post_to_active_backend` helper (extracted, not duplicated) with a new
+`accept_error_responses` flag: `show()` keeps its exact pre-existing
+200-only-counts-as-found behavior (default `False`, zero behavior change,
+confirmed via a new non-regression test); `explain_anomaly()` passes
+`True` since a reached-but-rejected 4xx (e.g. `llm_unavailable`) is a real
+answer from *our own* backend worth returning, not indistinguishable from
+"nothing is listening on this port."
+
+## Phase 3 — Frontend
+
+- **`useAnomalyExplain`** — new hook, `idle | loading | success | error`
+  state machine, mirrors `useVectorDiagnostics.ts`'s fetch/error-taxonomy
+  pattern (`TypeError` → unreachable, non-ok response → structured detail
+  from the response body). A "request generation" counter discards a
+  stale response if a newer point was clicked (or the panel dismissed)
+  before the first one resolved.
+- **Interaction**: `onClick` added to each beacon (hover already existed,
+  for the unrelated passive frame-level tooltip — click is new, and
+  deliberately distinct, since firing an expensive ~15-30s LLM call on
+  hover would spam the backend as the mouse merely passes over a beacon).
+- **Panel**: a new `.point-narrative-panel`, separate from the existing
+  frame-level `.tactical-terminal-card`, reusing the same established
+  visual language (dark translucent panel, monospace, the existing
+  `iye-terminal-in` fade/slide keyframe) rather than inventing a new
+  style. Keyed on `pointIndex` so switching points remounts (re-animates)
+  instead of mutating in place.
+- **Severity encoding**: `computeSeverity`/`computeSeverityColor`/
+  `computeSeverityScale`, pure and exported (same pattern as the existing
+  `computeBeaconPulse*` functions). Grounded in each point's own peak
+  Z-score (`point_z_scores`, not a fabricated ranking); floor pinned to
+  the backend's actual anomaly threshold (2.5σ) so severity measures *how
+  far past* the threshold a point is, not whether it crossed it at all.
+  Amber (mild) → the existing intense red (extreme); up to 50% larger at
+  extreme severity.
+
+## Verification boundary (documented, not silently skipped)
+
+No Playwright or other browser-automation tool is available in this
+environment (confirmed: not installed anywhere in the repo or reachable
+as a tool). This mirrors a limitation this codebase's own
+`VectorViewport.memo.test.tsx` already documents: R3F intrinsics
+(`<mesh>`, `<instancedMesh>`, ...) are host elements for react-three-
+fiber's own reconciler and cannot be mounted under jsdom without
+`@react-three/test-renderer` (not installed; judged out of scope to add
+for one sprint). The actual click → fetch → panel interaction is
+therefore proven at the boundary that *can* be tested — `useAnomalyExplain`
+fully unit-tested (loading/success/error/stale-response/superseded-click),
+severity functions fully unit-tested, `AnomalyBeacon`'s wiring type-checked
+— plus a **live, real end-to-end verification**: both dev servers started,
+a real 16-point anomaly frame POSTed, its `point_z_scores`/
+`axes_are_raw_features` read back, and that exact point's data POSTed to
+`/api/canvas/anomaly/explain` against a real local Ollama instance,
+producing a genuine, correctly-grounded explanation (see Phase 2 above).
+What was *not* done: an actual mouse click on the rendered WebGL canvas
+in a browser, since no tool exists here to drive one.
+
+## Full verification
+
+| Check | Result |
+|---|---|
+| `pytest tests/` (backend) | 102 passed (83 → 102: 19 new across 2 new files) |
+| `ruff check .` (backend) | All checks passed |
+| `tsc --noEmit` (frontend) | clean |
+| `eslint . --max-warnings 0` (frontend) | clean |
+| `vitest run` (frontend) | 113 passed (97 → 113: 16 new across 2 new files) |
+| `vite build` (frontend) | clean |
+
+## Existing test changes — quoted, not silently altered
+
+`frontend/src/ui/DiagnosticSidebar.test.tsx`'s `makeFrame` fixture needed
+the two new required `VectorFrame` fields (`point_z_scores`,
+`axes_are_raw_features` — always present with real values from the
+backend, so typed as required, not optional, matching e.g.
+`cluster_labels`/`anomaly_indices`).
+
+BEFORE:
+```ts
+    window_fill: 0.75,
+    dominant_dim: -1,
+  },
+  ...overrides,
+}
+```
+
+AFTER:
+```ts
+    window_fill: 0.75,
+    dominant_dim: -1,
+  },
+  point_z_scores: [],
+  axes_are_raw_features: true,
+  ...overrides,
+}
+```
+
+## Files touched this sprint
+
+**Created**: `backend/tests/test_anomaly_explain.py`,
+`backend/tests/test_explain_anomaly_sdk.py`,
+`frontend/src/canvas/math/useAnomalyExplain.ts` (+test),
+`frontend/src/canvas/VectorViewport.severity.test.ts`.
+
+**Modified**: `backend/app/api/main.py` (`AnomalyExplainError` + handler,
+`AnomalyExplainRequest`/`Response`, `_build_point_explanation_summary`,
+`explain_anomaly_point` route, `generate_anomaly_explanation`'s timeout
+param, `LLM_FALLBACK_TEXT` constant, `point_z_scores`/
+`axes_are_raw_features` computed in `ingest_and_broadcast`),
+`sdk/iye/__init__.py` (`compute_z_scores`, `explain_anomaly`,
+`_post_to_active_backend` refactor), `sdk/iye/server.py`
+(`VectorFramePayload` additive fields), `frontend/src/canvas/
+math/useVectorStream.ts` (`VectorFrame` additive fields + parsing),
+`frontend/src/canvas/VectorViewport.tsx` (severity functions, click
+handler, narrative panel, prop threading), `frontend/src/index.css`
+(`.point-narrative-panel` + related rules), `frontend/src/ui/
+DiagnosticSidebar.test.tsx` (fixture, quoted above).
+
+## Remaining known gaps (deliberately not touched, and why)
+
+1. **No browser click-automation verification** — see "Verification
+   boundary" above; flagged explicitly rather than silently claimed.
+2. **Concurrent LLM contention** — an explain request can queue behind an
+   unrelated frame's auto-narrative on the single local Ollama instance
+   and exceed even the 30s budget under load. A request queue or a lower
+   `NARRATIVE_CONCURRENCY_LIMIT` would help; out of scope for this sprint,
+   noted for follow-up.
+3. **The rendering bug and LLM-timeout items from the 2026-07-27 roadmap
+   review are still open** — this sprint was scoped to the narrative
+   interaction per the prompt, not re-addressed here (the LLM-timeout item
+   is now partially addressed for the *new* explain path specifically via
+   the 30s budget, but the *existing* fire-and-forget path's 10s default
+   was deliberately left unchanged, per Phase 2 above).
+4. **No exit animation on panel dismiss** — matches this codebase's own
+   existing precedent (`.tactical-terminal-card` also only animates in,
+   never out); not a new gap introduced this sprint.
+
+## Commits ready for review
+
+```
+6fc10f2 feat: interactive LLM narrative tooltips for per-point anomaly explanation
+```
+
+Ready to push to `origin/main` along with all prior commits.
