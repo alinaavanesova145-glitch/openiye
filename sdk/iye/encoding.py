@@ -159,6 +159,13 @@ class EncodingSummary:
     encoded_dims: int
     skipped_free_text: int
     columns: list[EncodedColumnInfo] = field(default_factory=list)
+    #: One original-field name per FINAL output matrix column (2026-07-31
+    #: sprint) — a one-hot-expanded field's N output columns all repeat
+    #: that field's name; a 'freetext' column contributes none (it produced
+    #: no output columns at all). Used to attribute an anomaly back to the
+    #: human-readable field that actually drove it, not an opaque matrix
+    #: column index — see iye.compute_feature_attributions.
+    expanded_column_names: list[str] = field(default_factory=list)
 
     def to_wire_dict(self) -> dict[str, int]:
         """Aggregate-only shape matching the existing encoding_summary wire
@@ -225,8 +232,17 @@ def vectorize_matrix(
                 f"(expected {total_columns}, got {len(row)})"
             )
 
-    if column_names is None:
+    if column_names is None or len(column_names) != total_columns:
+        # Missing, or the wrong length to safely index against this
+        # matrix's actual column count — degrade to positional defaults
+        # rather than crash or misalign names to the wrong columns.
         column_names = [f"col_{i}" for i in range(total_columns)]
+    else:
+        # Sanitize individual malformed entries (empty/whitespace-only)
+        # without discarding the otherwise-valid names around them.
+        column_names = [
+            name if name and name.strip() else f"col_{i}" for i, name in enumerate(column_names)
+        ]
 
     column_cells: list[list[str]] = [
         [_cell_to_str(raw_rows[r][c]) for r in range(row_count)] for c in range(total_columns)
@@ -248,6 +264,7 @@ def vectorize_matrix(
 
     output_columns: list[list[float]] = []
     encoded_column_infos: list[EncodedColumnInfo] = []
+    expanded_column_names: list[str] = []
 
     for c in range(total_columns):
         kind = kinds[c]
@@ -255,20 +272,23 @@ def vectorize_matrix(
         if kind == "numeric":
             raw = [float(v) for v in cells]
             output_columns.append(_zscore(raw) if mixed_pathway else raw)
+            expanded_column_names.append(column_names[c])
         elif kind == "onehot":
             rows, categories = _encode_onehot(cells)
             n = len(categories)
             for k in range(n):
                 output_columns.append([row[k] for row in rows])
+                expanded_column_names.append(column_names[c])
             encoded_column_infos.append(
                 EncodedColumnInfo(name=column_names[c], method="onehot", categories=categories, output_dims=n)
             )
         elif kind == "frequency":
             output_columns.append(_encode_frequency(cells))
+            expanded_column_names.append(column_names[c])
             encoded_column_infos.append(
                 EncodedColumnInfo(name=column_names[c], method="frequency", output_dims=1)
             )
-        # 'freetext' columns contribute nothing.
+        # 'freetext' columns contribute nothing — no output column, no name.
 
     dim = len(output_columns)
     matrix = np.zeros((row_count, dim), dtype=np.float64)
@@ -284,6 +304,7 @@ def vectorize_matrix(
         encoded_dims=encoded_dims,
         skipped_free_text=skipped_free_text,
         columns=encoded_column_infos,
+        expanded_column_names=expanded_column_names,
     )
     return matrix, summary
 

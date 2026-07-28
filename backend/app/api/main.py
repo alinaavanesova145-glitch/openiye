@@ -26,7 +26,7 @@ import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # ─── Robust sys.path Setup ────────────────────────────────────────────────────
 # Resolves correctly whether uvicorn is invoked from the project root,
@@ -46,7 +46,7 @@ for _p in [_project_root, _backend_dir, os.path.join(_project_root, "sdk")]:
 
 import iye  # type: ignore # noqa: E402
 from iye import encoding as iye_encoding  # type: ignore # noqa: E402
-from iye.server import Coordinate3D, VectorFramePayload  # type: ignore # noqa: E402
+from iye.server import Coordinate3D, FeatureAttribution, VectorFramePayload  # type: ignore # noqa: E402
 
 from app.api.capture import capture_frame  # noqa: E402
 from app.api.temporal_engine import TemporalEngine  # noqa: E402
@@ -357,6 +357,15 @@ class MatrixUploadRequest(BaseModel):
     dim: Optional[int] = 6          # feature dimension, default 6D metrics matrix
     matrix: Optional[List[List[Any]]] = None
     encoding_summary: Optional[EncodingSummary] = None
+    # One name per column of `matrix` AS SUBMITTED (2026-07-31 sprint) —
+    # already-post-encoding names for a browser-pre-encoded numeric matrix,
+    # or pre-encoding raw-column names for a non-numeric matrix the backend
+    # will encode itself (passed straight through to
+    # iye.encoding.vectorize_matrix, which expands them per output column).
+    # Optional; a length mismatch against the actual matrix is treated as
+    # absent rather than rejected — naming is a narrative-quality feature,
+    # not worth failing ingestion over. See ingest_and_broadcast.
+    column_names: Optional[List[str]] = None
 
 
 class AnomalyExplainRequest(BaseModel):
@@ -375,6 +384,13 @@ class AnomalyExplainRequest(BaseModel):
     z_scores: Coordinate3D
     cluster_label: int
     axes_are_raw_features: bool = True
+    # Additive (2026-07-31 sprint) — top named original fields driving this
+    # point's anomaly, already ranked by the frame that produced it (see
+    # VectorFramePayload.point_feature_attributions). Empty when no real
+    # column names were available at ingestion — the prompt then falls
+    # back to the pre-existing axes_are_raw_features-based generic phrasing
+    # below, unchanged.
+    feature_attributions: List[FeatureAttribution] = Field(default_factory=list)
 
 
 class AnomalyExplainResponse(BaseModel):
@@ -393,11 +409,32 @@ EXPLAIN_LLM_TIMEOUT_SECONDS = 30.0
 
 def _build_point_explanation_summary(req: AnomalyExplainRequest) -> str:
     """Grounds the LLM prompt in this specific point's actual computed
-    signal (dominant deviating axis + magnitude, cluster membership) rather
-    than generic filler — and is honest about what the axes mean: only
-    names a "measured feature" when axes_are_raw_features says that's
-    literally true, otherwise describes an abstract embedding axis instead
-    of fabricating a business-feature name for a UMAP-embedded dimension."""
+    signal — cluster membership, plus a deviation description that prefers
+    real named fields when available (2026-07-31 sprint) and otherwise
+    falls back to the original axis-based phrasing unchanged. Never
+    fabricates a name: axis-based phrasing only claims "a raw measured
+    feature" when axes_are_raw_features says that's literally true, and
+    named-field phrasing only fires when the frame that produced this
+    point actually had real column names to attribute to."""
+    cluster_desc = (
+        "flagged as noise (not part of any dense cluster)"
+        if req.cluster_label < 0
+        else f"a member of cluster {req.cluster_label}"
+    )
+
+    if req.feature_attributions:
+        top = req.feature_attributions[:2]
+        if len(top) == 1:
+            deviation_desc = f"Primarily driven by the {top[0].name} feature, peak |z|={abs(top[0].z_score):.2f}."
+        else:
+            deviation_desc = (
+                f"Primarily driven by the {top[0].name} feature (|z|={abs(top[0].z_score):.2f}), "
+                f"with a secondary contribution from {top[1].name} (|z|={abs(top[1].z_score):.2f})."
+            )
+        return f"point #{req.point_index}. {deviation_desc} This point is {cluster_desc}."
+
+    # Fallback: no real column names were available for this frame — same
+    # generic axis-based grounding as before this sprint, unchanged.
     axis_labels = ["x", "y", "z"]
     coords = [req.coordinates.x, req.coordinates.y, req.coordinates.z]
     zs = [req.z_scores.x, req.z_scores.y, req.z_scores.z]
@@ -407,12 +444,6 @@ def _build_point_explanation_summary(req: AnomalyExplainRequest) -> str:
         axis_desc = f"the {axis_labels[dominant]}-axis (a raw measured feature)"
     else:
         axis_desc = f"embedding axis {axis_labels[dominant]} (a UMAP-reduced dimension, not a single raw feature)"
-
-    cluster_desc = (
-        "flagged as noise (not part of any dense cluster)"
-        if req.cluster_label < 0
-        else f"a member of cluster {req.cluster_label}"
-    )
 
     return (
         f"point #{req.point_index} at coordinates "
@@ -445,6 +476,12 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
     # and we (not the browser's parseMatrix.ts) did the encoding ourselves —
     # see the `else` branch below and Phase A of the 2026-07-28 sprint.
     computed_encoding_summary: Optional[dict] = None
+    # One name per FINAL feature-matrix column, used to attribute an
+    # anomaly back to a real field name (2026-07-31 sprint) — stays None
+    # (never an auto-generated "col_N" placeholder) unless the caller
+    # actually supplied real names, so a request with no names gets the
+    # honest generic axis-based explain fallback, not a fake-looking label.
+    feature_names_for_attribution: Optional[List[str]] = None
 
     if request.matrix is not None:
         row_lengths = {len(row) for row in request.matrix}
@@ -462,17 +499,28 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
         if iye_encoding.is_fully_numeric(request.matrix):
             # Fast path, unchanged from before this sprint: a browser
             # upload has already been encoded client-side by the time it
-            # gets here, so every cell is already a real number.
+            # gets here, so every cell is already a real number. Names, if
+            # supplied, are already one-per-final-column (the browser did
+            # any encoding/expansion, so no further mapping is needed).
             data_2d = np.array(request.matrix, dtype=np.float64)
+            feature_names_for_attribution = request.column_names
         else:
             # No browser in the loop for this request (direct API/curl call,
             # or iye.show() called straight from a script) — parseMatrix.ts
             # never ran, so do the same classify-and-encode pass here.
             try:
-                data_2d, summary = iye_encoding.vectorize_matrix(request.matrix)
+                data_2d, summary = iye_encoding.vectorize_matrix(
+                    request.matrix, column_names=request.column_names
+                )
             except iye_encoding.RaggedMatrixError as e:
                 raise IngestValidationError(detail=str(e), stage="ingestion") from e
             computed_encoding_summary = summary.to_wire_dict()
+            # Only trust vectorize_matrix's expanded names when the caller
+            # actually supplied real ones — it always returns *some* name
+            # per column, falling back to "col_N" placeholders internally,
+            # which would make a misleadingly specific-looking narrative.
+            if request.column_names is not None:
+                feature_names_for_attribution = summary.expanded_column_names
         if data_2d.ndim != 2:
             raise IngestValidationError(
                 detail="'matrix' must be a 2-D array", stage="ingestion"
@@ -536,6 +584,15 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
         labels            = iye.cluster(coords)
         anomaly_idx, expl = iye.detect_anomalies(coords)
         point_z_scores    = iye.compute_z_scores(coords).tolist()
+        # Computed on data_2d (pre-reduction) — deliberately not on coords
+        # (post-reduction): after a real UMAP embedding, an output axis is
+        # a nonlinear mix of every input column, so there is no principled
+        # "axis 2 is column 3" mapping, but a per-original-column Z-score
+        # is always well-defined regardless of whether reduction happened.
+        point_feature_attributions = [
+            [{"name": a.name, "z_score": a.z_score} for a in point_attrs]
+            for point_attrs in iye.compute_feature_attributions(data_2d, feature_names_for_attribution)
+        ]
     except Exception as e:
         logger.exception(
             "Unexpected failure in reduce/cluster/detect_anomalies for a "
@@ -603,6 +660,7 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
         reduction_note   = reduction_note,
         point_z_scores   = point_z_scores,
         axes_are_raw_features = axes_are_raw_features,
+        point_feature_attributions = point_feature_attributions,
     )
 
     # Broadcast cleanly to our explicit stream endpoint

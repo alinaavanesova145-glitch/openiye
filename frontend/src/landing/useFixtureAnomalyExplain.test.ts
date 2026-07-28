@@ -1,7 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useFixtureAnomalyExplain } from './useFixtureAnomalyExplain'
-import { DEMO_ANOMALY_INDICES, DEMO_NARRATIVES, DEMO_POINTS } from './demoFixture'
+import { DEMO_ANOMALY_INDICES, DEMO_FEATURE_ATTRIBUTIONS, DEMO_NARRATIVES, DEMO_POINTS } from './demoFixture'
 import type { ExplainablePoint } from '@canvas/math/useAnomalyExplain'
 
 function pointFor(index: number): ExplainablePoint {
@@ -13,6 +13,7 @@ function pointFor(index: number): ExplainablePoint {
     zScores: p.zScores,
     clusterLabel: p.clusterLabel,
     axesAreRawFeatures: true,
+    featureAttributions: DEMO_FEATURE_ATTRIBUTIONS[p.index] ?? [],
   }
 }
 
@@ -78,6 +79,7 @@ describe('useFixtureAnomalyExplain', () => {
         zScores: { x: 0, y: 0, z: 0 },
         clusterLabel: -1,
         axesAreRawFeatures: true,
+        featureAttributions: [],
       })
       vi.runAllTimers()
     })

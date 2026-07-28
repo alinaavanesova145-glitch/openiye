@@ -118,6 +118,25 @@ describe('useVectorDiagnostics — error taxonomy', () => {
     })
   })
 
+  it('sends column_names (2026-07-31 sprint) so the backend can attribute anomalies to real field names', async () => {
+    const captured: { body: Record<string, unknown> | null } = { body: null }
+    mockFetchRoutedBy((init) => {
+      captured.body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return Promise.resolve(new Response(JSON.stringify(VALID_FRAME_RESPONSE), { status: 200 }))
+    })
+    const { result } = renderHook(() => useVectorDiagnostics())
+
+    await act(async () => {
+      await result.current.ingestFile(makeNumericCsvFile())
+    })
+
+    await waitFor(() => {
+      expect(result.current.dataSourceState.status).toBe('loaded')
+    })
+    expect(captured.body).not.toBeNull()
+    expect(captured.body?.column_names).toEqual(['a', 'b', 'c'])
+  })
+
   it('a content-validation rejection (package.json-shaped drop) never calls fetch at all', async () => {
     const canvasVectorsFetch = vi.fn(() =>
       Promise.resolve(new Response(JSON.stringify(VALID_FRAME_RESPONSE), { status: 200 })),

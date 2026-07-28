@@ -382,6 +382,81 @@ describe('parseJsonMatrix', () => {
   })
 })
 
+// ─── EncodingSummary.featureNames (2026-07-31 sprint) ──────────────────────────
+// One original-column name per FINAL output matrix column — threaded to the
+// backend as MatrixUploadRequest.column_names so an anomaly can be attributed
+// to a real field name instead of an opaque matrix column index.
+
+describe('EncodingSummary.featureNames', () => {
+  it('a pure-numeric CSV keeps one name per column, unchanged order', async () => {
+    const csv = 'temperature,pressure\n1,2\n3,4'
+    const outcome = await parseCsvMatrix(csv)
+    expect(outcome.kind).toBe('ok')
+    if (outcome.kind === 'ok') {
+      expect(outcome.matrix.encoding.featureNames).toEqual(['temperature', 'pressure'])
+    }
+  })
+
+  it('a one-hot-expanded column repeats its original name once per category dimension', async () => {
+    const csv = 'color,n\nred,1\nblue,2\ngreen,3\nred,4'
+    const outcome = await parseCsvMatrix(csv)
+    expect(outcome.kind).toBe('ok')
+    if (outcome.kind === 'ok') {
+      // color -> 3 categories (blue, green, red) -> 3 repeated names, then n
+      expect(outcome.matrix.encoding.featureNames).toEqual(['color', 'color', 'color', 'n'])
+    }
+  })
+
+  it('a frequency-encoded column contributes exactly one name for its one output column', async () => {
+    const rows = Array.from({ length: 30 }, (_, i) => `cat_${String(i % 25)},${String(i)}`)
+    const csv = `dept,n\n${rows.join('\n')}`
+    const outcome = await parseCsvMatrix(csv)
+    expect(outcome.kind).toBe('ok')
+    if (outcome.kind === 'ok') {
+      expect(outcome.matrix.encoding.featureNames).toContain('dept')
+      expect(outcome.matrix.encoding.featureNames.filter((n) => n === 'dept')).toHaveLength(1)
+    }
+  })
+
+  it('a skipped free-text column contributes no name at all', async () => {
+    const rows = Array.from({ length: 25 }, (_, i) => `${String(i)},unique log line number ${String(i)}`)
+    const csv = `n,notes\n${rows.join('\n')}`
+    const outcome = await parseCsvMatrix(csv)
+    expect(outcome.kind).toBe('ok')
+    if (outcome.kind === 'ok') {
+      expect(outcome.matrix.encoding.featureNames).not.toContain('notes')
+      expect(outcome.matrix.encoding.featureNames).toEqual(['n'])
+    }
+  })
+
+  it('a bare array-of-arrays JSON payload has no headers, so featureNames is honestly empty', () => {
+    const outcome = parseJsonMatrix(
+      JSON.stringify([
+        [1, 2, 3],
+        [4, 5, 6],
+      ]),
+    )
+    expect(outcome.kind).toBe('ok')
+    if (outcome.kind === 'ok') {
+      expect(outcome.matrix.encoding.featureNames).toEqual([])
+    }
+  })
+
+  it('an array of flat objects uses the object keys as feature names', () => {
+    const outcome = parseJsonMatrix(
+      JSON.stringify([
+        { age: 25, region: 'west' },
+        { age: 30, region: 'east' },
+      ]),
+    )
+    expect(outcome.kind).toBe('ok')
+    if (outcome.kind === 'ok') {
+      // age (numeric) + region (2-category one-hot, repeated twice)
+      expect(outcome.matrix.encoding.featureNames).toEqual(['age', 'region', 'region'])
+    }
+  })
+})
+
 // ─── NPY ──────────────────────────────────────────────────────────────────────
 
 describe('parseNpyMatrix', () => {

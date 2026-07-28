@@ -32,6 +32,14 @@ export interface EncodingSummary {
   encodedDims: number
   skippedFreeText: number
   columns: EncodedColumnInfo[]
+  /** One original-column name per FINAL output matrix column (2026-07-31
+   *  sprint) — a one-hot-expanded column's N output dims all repeat that
+   *  column's name; a skipped free-text column contributes none. Lets the
+   *  backend attribute an anomaly back to a real field name instead of an
+   *  opaque matrix column index — see sdk/iye's identical
+   *  expanded_column_names (backend/app/api/main.py's `column_names`
+   *  request field expects exactly this shape). */
+  featureNames: string[]
 }
 
 export interface ParsedMatrix {
@@ -194,6 +202,7 @@ function buildFeatureMatrix(
 
   const outputColumns: number[][] = [] // column-major; each entry has length rowCount
   const encodedColumnInfos: EncodedColumnInfo[] = []
+  const featureNames: string[] = []
 
   for (let c = 0; c < totalColumns; c++) {
     const kind = kinds[c]
@@ -201,18 +210,21 @@ function buildFeatureMatrix(
     if (kind === 'numeric') {
       const raw = cells.map((v) => Number(v))
       outputColumns.push(mixedPathway ? zScoreNormalize(raw) : raw)
+      featureNames.push(columnNames[c])
     } else if (kind === 'onehot') {
       const { rows, categories } = encodeOneHot(cells)
       const n = categories.length
       for (let k = 0; k < n; k++) {
         outputColumns.push(rows.map((row) => row[k]))
+        featureNames.push(columnNames[c])
       }
       encodedColumnInfos.push({ name: columnNames[c], method: 'onehot', categories, outputDims: n })
     } else if (kind === 'frequency') {
       outputColumns.push(encodeFrequency(cells))
+      featureNames.push(columnNames[c])
       encodedColumnInfos.push({ name: columnNames[c], method: 'frequency', outputDims: 1 })
     }
-    // 'freetext' columns contribute nothing.
+    // 'freetext' columns contribute nothing — no output column, no name.
   }
 
   const dim = outputColumns.length
@@ -234,6 +246,7 @@ function buildFeatureMatrix(
       encodedDims,
       skippedFreeText,
       columns: encodedColumnInfos,
+      featureNames,
     },
   }
 }
@@ -280,7 +293,10 @@ function classifyOutcome(
  * Chunked: yields to the event loop every CSV_CHUNK_ROWS rows so a large
  * file's parse can't freeze the UI thread.
  */
-export async function parseCsvMatrix(text: string, onProgress?: ParseProgress): Promise<ParseOutcome> {
+export async function parseCsvMatrix(
+  text: string,
+  onProgress?: ParseProgress,
+): Promise<ParseOutcome> {
   const lines = text.split(/\r\n|\n|\r/).filter((l) => l.trim().length > 0)
   if (lines.length === 0) {
     return { kind: 'rejected', reason: REJECTED_NO_NUMERIC_DATA }
@@ -409,6 +425,9 @@ export function parseJsonMatrix(text: string): ParseOutcome {
           encodedDims: 0,
           skippedFreeText: 0,
           columns: [],
+          // A bare array-of-arrays JSON payload has no column headers at
+          // all — honestly empty, not fabricated positional names.
+          featureNames: [],
         },
       },
     }
@@ -476,12 +495,16 @@ export function parseNpyMatrix(buffer: ArrayBuffer): ParseOutcome {
   const headerLenOffset = 8
   const view = new DataView(buffer)
   const headerLen =
-    headerLenBytes === 2 ? view.getUint16(headerLenOffset, true) : view.getUint32(headerLenOffset, true)
+    headerLenBytes === 2
+      ? view.getUint16(headerLenOffset, true)
+      : view.getUint32(headerLenOffset, true)
   const headerStart = headerLenOffset + headerLenBytes
 
   if (headerStart + headerLen > buffer.byteLength) return rejected
 
-  const headerStr = new TextDecoder('ascii').decode(bytes.subarray(headerStart, headerStart + headerLen))
+  const headerStr = new TextDecoder('ascii').decode(
+    bytes.subarray(headerStart, headerStart + headerLen),
+  )
 
   const descrMatch = /'descr':\s*'([^']+)'/.exec(headerStr)
   const fortranMatch = /'fortran_order':\s*(True|False)/.exec(headerStr)
@@ -493,7 +516,10 @@ export function parseNpyMatrix(buffer: ArrayBuffer): ParseOutcome {
     return { kind: 'rejected', reason: `unsupported npy dtype · ${descrMatch[1]}` }
   }
   if (fortranMatch[1] === 'True') {
-    return { kind: 'rejected', reason: 'unsupported npy layout · fortran-order arrays are not supported' }
+    return {
+      kind: 'rejected',
+      reason: 'unsupported npy layout · fortran-order arrays are not supported',
+    }
   }
 
   const shape = shapeMatch[1]
@@ -541,6 +567,8 @@ export function parseNpyMatrix(buffer: ArrayBuffer): ParseOutcome {
         encodedDims: 0,
         skippedFreeText: 0,
         columns: [],
+        // NPY is a headerless binary array format — no column names exist.
+        featureNames: [],
       },
     },
   }

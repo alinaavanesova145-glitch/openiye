@@ -16,7 +16,7 @@
 
 import { useCallback, useRef, useState } from 'react'
 import { API_BASE } from '@lib/apiConfig'
-import type { VectorCoordinate3D } from './useVectorStream'
+import type { FeatureAttribution, VectorCoordinate3D } from './useVectorStream'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -26,6 +26,12 @@ export interface ExplainablePoint {
   zScores: VectorCoordinate3D
   clusterLabel: number
   axesAreRawFeatures: boolean
+  /** Additive (2026-07-31 sprint) — top named original fields driving this
+   *  point's anomaly, from the frame that produced it (see
+   *  VectorFrame.point_feature_attributions). Empty when no real column
+   *  names were available at ingestion — the backend then falls back to
+   *  the older axis-based phrasing, unchanged. */
+  featureAttributions: FeatureAttribution[]
 }
 
 export type AnomalyExplainState =
@@ -86,6 +92,7 @@ export function useAnomalyExplain(): AnomalyExplainResult {
       z_scores: point.zScores,
       cluster_label: point.clusterLabel,
       axes_are_raw_features: point.axesAreRawFeatures,
+      feature_attributions: point.featureAttributions,
     }
 
     fetch(`${API_BASE}/api/canvas/anomaly/explain`, {

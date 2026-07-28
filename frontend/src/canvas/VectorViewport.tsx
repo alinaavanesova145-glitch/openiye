@@ -5,7 +5,7 @@ import { Canvas, useFrame } from '@react-three/fiber'
 import { OrbitControls, Line, Html } from '@react-three/drei'
 import { ConvexGeometry } from 'three/examples/jsm/geometries/ConvexGeometry.js'
 import { useVectorStream, DEFAULT_TEMPORAL_METRICS, HOT_REGIMES } from './math/useVectorStream'
-import type { TemporalMetrics, VectorCoordinate3D } from './math/useVectorStream'
+import type { FeatureAttribution, TemporalMetrics, VectorCoordinate3D } from './math/useVectorStream'
 import { useAnomalyExplain } from './math/useAnomalyExplain'
 import type { AnomalyExplainState, ExplainablePoint } from './math/useAnomalyExplain'
 
@@ -341,6 +341,10 @@ interface AnomalyBeaconProps {
    *  of the frame-level temporal stats above. */
   pointZScore: VectorCoordinate3D
   clusterLabel: number
+  /** Additive (2026-07-31 sprint) — top named original fields driving this
+   *  specific point's anomaly, echoed back verbatim in the explain
+   *  request. Empty when no real column names were available. */
+  featureAttributions: FeatureAttribution[]
   isSelected: boolean
   onExplainRequest: (point: ExplainablePoint) => void
 }
@@ -352,6 +356,7 @@ const AnomalyBeacon = memo(function AnomalyBeacon({
   tooltipInfo,
   pointZScore,
   clusterLabel,
+  featureAttributions,
   isSelected,
   onExplainRequest,
 }: AnomalyBeaconProps) {
@@ -416,6 +421,7 @@ const AnomalyBeacon = memo(function AnomalyBeacon({
             zScores: pointZScore,
             clusterLabel,
             axesAreRawFeatures: tooltipInfo.axesAreRawFeatures,
+            featureAttributions,
           })
         }}
       >
@@ -487,6 +493,7 @@ interface BeaconsProps {
   anomalyIndices: number[]
   clusterLabels: number[]
   pointZScores: VectorCoordinate3D[]
+  pointFeatureAttributions: FeatureAttribution[][]
   temporalRef: MutableRefObject<TemporalMetrics>
   tooltipInfo: BeaconTooltipInfo
   selectedPointIndex: number | null
@@ -494,12 +501,14 @@ interface BeaconsProps {
 }
 
 const EMPTY_Z_SCORE: VectorCoordinate3D = { x: 0, y: 0, z: 0 }
+const EMPTY_FEATURE_ATTRIBUTIONS: FeatureAttribution[] = []
 
 const AnomalyBeacons = memo(function AnomalyBeacons({
   positions,
   anomalyIndices,
   clusterLabels,
   pointZScores,
+  pointFeatureAttributions,
   temporalRef,
   tooltipInfo,
   selectedPointIndex,
@@ -537,6 +546,7 @@ const AnomalyBeacons = memo(function AnomalyBeacons({
           tooltipInfo={tooltipInfo}
           pointZScore={pointZScores[idx] ?? EMPTY_Z_SCORE}
           clusterLabel={clusterLabels[idx] ?? -1}
+          featureAttributions={pointFeatureAttributions[idx] ?? EMPTY_FEATURE_ATTRIBUTIONS}
           isSelected={selectedPointIndex === idx}
           onExplainRequest={onExplainRequest}
         />
@@ -552,6 +562,7 @@ export interface TacticalFieldProps {
   anomalyIndices: number[]
   clusterLabels: number[]
   pointZScores: VectorCoordinate3D[]
+  pointFeatureAttributions: FeatureAttribution[][]
   temporalRef: MutableRefObject<TemporalMetrics>
   tooltipInfo: BeaconTooltipInfo
   selectedPointIndex: number | null
@@ -567,6 +578,7 @@ export const TacticalVectorField = memo(function TacticalVectorField({
   anomalyIndices,
   clusterLabels,
   pointZScores,
+  pointFeatureAttributions,
   temporalRef,
   tooltipInfo,
   selectedPointIndex,
@@ -602,6 +614,7 @@ export const TacticalVectorField = memo(function TacticalVectorField({
         anomalyIndices={anomalyIndices}
         clusterLabels={clusterLabels}
         pointZScores={pointZScores}
+        pointFeatureAttributions={pointFeatureAttributions}
         temporalRef={temporalRef}
         tooltipInfo={tooltipInfo}
         selectedPointIndex={selectedPointIndex}
@@ -667,6 +680,7 @@ export function PointNarrativePanel({ explainState, dismiss }: PointNarrativePan
 // ─── Main Viewport ────────────────────────────────────────────────────────────
 
 const EMPTY_Z_SCORE_ARRAY: VectorCoordinate3D[] = []
+const EMPTY_FEATURE_ATTRIBUTIONS_ARRAY: FeatureAttribution[][] = []
 
 export default function VectorViewport() {
   const { positions, anomalyIndices, streamState, liveFrame, temporalRef, narrativeHistory } =
@@ -681,6 +695,9 @@ export default function VectorViewport() {
     ? (liveFrame?.cluster_labels ?? EMPTY_NUMBER_ARRAY)
     : mockFrame.clusterLabels
   const activePointZScores = hasLiveData ? (liveFrame?.point_z_scores ?? EMPTY_Z_SCORE_ARRAY) : EMPTY_Z_SCORE_ARRAY
+  const activePointFeatureAttributions = hasLiveData
+    ? (liveFrame?.point_feature_attributions ?? EMPTY_FEATURE_ATTRIBUTIONS_ARRAY)
+    : EMPTY_FEATURE_ATTRIBUTIONS_ARRAY
 
   const pointCount = activePositions.length / 3
   const regime = liveFrame?.temporal.regime ?? DEFAULT_TEMPORAL_METRICS.regime
@@ -733,6 +750,7 @@ export default function VectorViewport() {
           anomalyIndices={activeAnomalyIndices}
           clusterLabels={activeClusterLabels}
           pointZScores={activePointZScores}
+          pointFeatureAttributions={activePointFeatureAttributions}
           temporalRef={temporalRef}
           tooltipInfo={tooltipInfo}
           selectedPointIndex={selectedPointIndex}

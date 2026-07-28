@@ -63,6 +63,9 @@ function makeFrameMessage(
     coordinates?: { x: number; y: number; z: number }[]
     cluster_labels?: number[]
     anomaly_indices?: number[]
+    point_z_scores?: { x: number; y: number; z: number }[]
+    axes_are_raw_features?: boolean
+    point_feature_attributions?: { name: string; z_score: number }[][]
   } = {},
 ) {
   return {
@@ -74,6 +77,9 @@ function makeFrameMessage(
     cluster_labels: overrides.cluster_labels ?? [0],
     anomaly_indices: overrides.anomaly_indices ?? [],
     explanation: overrides.explanation ?? null,
+    point_z_scores: overrides.point_z_scores,
+    axes_are_raw_features: overrides.axes_are_raw_features,
+    point_feature_attributions: overrides.point_feature_attributions,
     temporal: {
       z_max: 0,
       z_per_dim: [],
@@ -156,6 +162,47 @@ describe('useVectorStream — frame messages', () => {
     act(() => ws.triggerOpen())
     act(() => ws.triggerMessage({ type: 'frame', id: 'empty', coordinates: [] }))
     expect(result.current.liveFrame).toBeNull()
+  })
+})
+
+describe('useVectorStream — point_feature_attributions (2026-07-31 sprint)', () => {
+  it('parses a real point_feature_attributions payload into named attributions', () => {
+    const { result } = renderHook(() => useVectorStream())
+    const ws = MockWebSocket.instances[0]
+    act(() => ws.triggerOpen())
+    act(() => {
+      ws.triggerMessage(
+        makeFrameMessage({
+          point_feature_attributions: [[{ name: 'temperature', z_score: 4.35 }]],
+        }),
+      )
+    })
+    expect(result.current.liveFrame?.point_feature_attributions).toEqual([
+      [{ name: 'temperature', z_score: 4.35 }],
+    ])
+  })
+
+  it('defaults to an empty array per point when the field is absent (older backend, mock frame)', () => {
+    const { result } = renderHook(() => useVectorStream())
+    const ws = MockWebSocket.instances[0]
+    act(() => ws.triggerOpen())
+    act(() => {
+      ws.triggerMessage(makeFrameMessage())
+    })
+    expect(result.current.liveFrame?.point_feature_attributions).toEqual([])
+  })
+
+  it('drops a malformed attribution entry (missing name/z_score) rather than throwing', () => {
+    const { result } = renderHook(() => useVectorStream())
+    const ws = MockWebSocket.instances[0]
+    act(() => ws.triggerOpen())
+    act(() => {
+      ws.triggerMessage({
+        ...makeFrameMessage(),
+        point_feature_attributions: [[{ name: 'temperature' }, { z_score: 4.35 }, 'garbage']],
+      })
+    })
+    expect(result.current.liveFrame?.point_feature_attributions).toEqual([[]])
   })
 })
 

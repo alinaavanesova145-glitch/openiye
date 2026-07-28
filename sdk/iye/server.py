@@ -28,6 +28,17 @@ class Coordinate3D(BaseModel):
     z: float
 
 
+class FeatureAttribution(BaseModel):
+    """A single named original field's deviation magnitude for one point
+    (2026-07-31 sprint) — see iye.compute_feature_attributions. Grouped
+    back from possibly-multiple encoded matrix columns (e.g. a one-hot
+    field's several category columns) to the one human-readable field
+    that actually produced them."""
+
+    name: str
+    z_score: float
+
+
 class VectorFramePayload(BaseModel):
     """
     The canonical frame payload streamed over WebSocket to the frontend canvas.
@@ -114,6 +125,20 @@ class VectorFramePayload(BaseModel):
             "narrative honestly say 'the Nth measured value' only when "
             "that's actually true, instead of fabricating meaning for an "
             "opaque UMAP axis."
+        ),
+    )
+    point_feature_attributions: list[list[FeatureAttribution]] = Field(
+        default_factory=list,
+        description=(
+            "Additive (2026-07-31 sprint) — per point, the top named "
+            "original fields (not raw matrix/axis indices) by deviation "
+            "magnitude, computed on the pre-reduction feature matrix so it "
+            "stays meaningful even after a real UMAP embedding (see "
+            "iye.compute_feature_attributions). An empty list for a given "
+            "point means no real column names were available for this "
+            "request — the explain endpoint falls back to the older "
+            "axes_are_raw_features-based generic phrasing in that case, "
+            "never a fabricated name."
         ),
     )
 

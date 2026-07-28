@@ -14,19 +14,26 @@ import type { BeaconTooltipInfo } from '@canvas/VectorViewport'
 import { DEFAULT_TEMPORAL_METRICS } from '@canvas/math/useVectorStream'
 import type { TemporalMetrics } from '@canvas/math/useVectorStream'
 import { useFixtureAnomalyExplain } from './useFixtureAnomalyExplain'
-import { DEMO_ANOMALY_INDICES, DEMO_AXIS_CAPTION, DEMO_DATASET_LABEL, DEMO_POINTS } from './demoFixture'
+import {
+  DEMO_ANOMALY_INDICES,
+  DEMO_AXIS_CAPTION,
+  DEMO_DATASET_LABEL,
+  DEMO_FEATURE_ATTRIBUTIONS,
+  DEMO_POINTS,
+} from './demoFixture'
 
 function buildStaticSceneData() {
   const positions = new Float32Array(DEMO_POINTS.length * 3)
   const clusterLabels: number[] = []
   const pointZScores = DEMO_POINTS.map((p) => p.zScores)
+  const pointFeatureAttributions = DEMO_POINTS.map((p) => DEMO_FEATURE_ATTRIBUTIONS[p.index] ?? [])
   DEMO_POINTS.forEach((p, i) => {
     positions[i * 3] = p.position[0]
     positions[i * 3 + 1] = p.position[1]
     positions[i * 3 + 2] = p.position[2]
     clusterLabels.push(p.clusterLabel)
   })
-  return { positions, clusterLabels, pointZScores }
+  return { positions, clusterLabels, pointZScores, pointFeatureAttributions }
 }
 
 // Frame-level tooltip info the real live stream would normally supply —
@@ -41,7 +48,10 @@ const STATIC_TOOLTIP_INFO: BeaconTooltipInfo = {
 }
 
 export default function DemoWidget() {
-  const { positions, clusterLabels, pointZScores } = useMemo(buildStaticSceneData, [])
+  const { positions, clusterLabels, pointZScores, pointFeatureAttributions } = useMemo(
+    buildStaticSceneData,
+    [],
+  )
   const temporalRef = useRef<TemporalMetrics>(DEFAULT_TEMPORAL_METRICS)
   const { explainState, explainPoint, dismiss } = useFixtureAnomalyExplain()
 
@@ -64,6 +74,7 @@ export default function DemoWidget() {
             anomalyIndices={DEMO_ANOMALY_INDICES}
             clusterLabels={clusterLabels}
             pointZScores={pointZScores}
+            pointFeatureAttributions={pointFeatureAttributions}
             temporalRef={temporalRef}
             tooltipInfo={STATIC_TOOLTIP_INFO}
             selectedPointIndex={selectedPointIndex}

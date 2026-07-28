@@ -11,6 +11,7 @@ function noEncoding(totalColumns: number): EncodingSummary {
     encodedDims: 0,
     skippedFreeText: 0,
     columns: [],
+    featureNames: [],
   }
 }
 
@@ -33,7 +34,9 @@ describe('DataSourcePanel', () => {
   })
 
   it('renders the parsing state without a percentage when progress is unknown (JSON/NPY)', () => {
-    render(<DataSourcePanel state={{ status: 'parsing', filename: 'data.json' }} onFile={vi.fn()} />)
+    render(
+      <DataSourcePanel state={{ status: 'parsing', filename: 'data.json' }} onFile={vi.fn()} />,
+    )
     expect(screen.getByText('parsing…')).toBeInTheDocument()
   })
 
@@ -107,6 +110,7 @@ describe('DataSourcePanel', () => {
       encodedDims: 7,
       skippedFreeText: 2,
       columns: [],
+      featureNames: [],
     }
     const state: DataSourceState = {
       status: 'partial',
@@ -120,9 +124,7 @@ describe('DataSourcePanel', () => {
     }
     render(<DataSourcePanel state={state} onFile={vi.fn()} />)
     expect(
-      screen.getByText(
-        'loaded 11 of 9 columns · 3 encoded categorical · 2 skipped (free text)',
-      ),
+      screen.getByText('loaded 11 of 9 columns · 3 encoded categorical · 2 skipped (free text)'),
     ).toBeInTheDocument()
   })
 
@@ -151,6 +153,7 @@ describe('DataSourcePanel', () => {
       encodedDims: 10,
       skippedFreeText: 0,
       columns: [],
+      featureNames: [],
     }
     const state: DataSourceState = {
       status: 'loaded',
@@ -173,6 +176,7 @@ describe('DataSourcePanel', () => {
       encodedDims: 8,
       skippedFreeText: 0,
       columns: [],
+      featureNames: [],
     }
     const state: DataSourceState = {
       status: 'loaded',
@@ -183,7 +187,9 @@ describe('DataSourcePanel', () => {
     }
     render(<DataSourcePanel state={state} onFile={vi.fn()} />)
     expect(
-      screen.getByText('40 rows · 8 dims · clustered · visualizing encoded categories · not raw measurements'),
+      screen.getByText(
+        '40 rows · 8 dims · clustered · visualizing encoded categories · not raw measurements',
+      ),
     ).toBeInTheDocument()
   })
 
@@ -200,7 +206,9 @@ describe('DataSourcePanel', () => {
       reason: 'ingest failed · server rejected the request (status 500)',
     }
     render(<DataSourcePanel state={state} onFile={vi.fn()} />)
-    expect(screen.getByText('ingest failed · server rejected the request (status 500)')).toBeInTheDocument()
+    expect(
+      screen.getByText('ingest failed · server rejected the request (status 500)'),
+    ).toBeInTheDocument()
   })
 
   // NEW 2026-07-14 (Phase 1): `network_error` — transport never reached the
@@ -250,6 +258,7 @@ describe('DataSourcePanel', () => {
         encodedDims: 14,
         skippedFreeText: 0,
         columns: [],
+        featureNames: [],
       },
     }
 
@@ -257,7 +266,9 @@ describe('DataSourcePanel', () => {
       const onFile = vi.fn()
       render(<DataSourcePanel state={offerState} onFile={onFile} onConfirmOffer={vi.fn()} />)
       expect(screen.getByText('survey.csv')).toBeInTheDocument()
-      expect(screen.getByText('no numeric columns · 3 categorical fields detected')).toBeInTheDocument()
+      expect(
+        screen.getByText('no numeric columns · 3 categorical fields detected'),
+      ).toBeInTheDocument()
       expect(screen.getByText('encode & visualize')).toBeInTheDocument()
       expect(screen.getByText('dismiss')).toBeInTheDocument()
       expect(onFile).not.toHaveBeenCalled()
@@ -312,6 +323,7 @@ describe('DataSourcePanel', () => {
           encodedDims: 1,
           skippedFreeText: 0,
           columns: [],
+          featureNames: [],
         },
       },
     ]

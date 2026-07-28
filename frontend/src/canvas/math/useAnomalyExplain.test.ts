@@ -12,6 +12,7 @@ const SAMPLE_POINT: ExplainablePoint = {
   zScores: { x: 0.1, y: 4.2, z: 0.3 },
   clusterLabel: -1,
   axesAreRawFeatures: true,
+  featureAttributions: [],
 }
 
 function mockFetch(handler: () => Promise<Response>) {

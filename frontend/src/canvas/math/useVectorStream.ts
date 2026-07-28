@@ -61,6 +61,16 @@ export const HOT_REGIMES: ReadonlySet<Regime> = new Set([
   'drift',
 ])
 
+/** A single named original field's deviation magnitude for one point
+ *  (2026-07-31 sprint) — see backend's iye.compute_feature_attributions.
+ *  Grouped back from possibly-multiple encoded matrix columns (e.g. a
+ *  one-hot field's several category columns) to the one human-readable
+ *  field that actually produced them. */
+export interface FeatureAttribution {
+  name: string
+  z_score: number
+}
+
 export interface VectorFrame {
   frame_id: string
   id: string
@@ -85,6 +95,12 @@ export interface VectorFrame {
    *  abstract axes). Defaults true, matching the backend's default for the
    *  common <=3-feature/passthrough case. */
   axes_are_raw_features: boolean
+  /** Additive (2026-07-31 sprint) — per point, the top named original
+   *  fields driving its anomaly, parallel to `coordinates`. An empty list
+   *  for a given point means no real column names were available at
+   *  ingestion (see MatrixUploadRequest.column_names) — the explain
+   *  request then falls back to the older axis-based phrasing. */
+  point_feature_attributions: FeatureAttribution[][]
 }
 
 export interface NarrativeHistoryEntry {
@@ -164,6 +180,32 @@ function parsePointZScores(raw: unknown): VectorCoordinate3D[] {
     }
   }
   return result
+}
+
+/** Parses the backend's point_feature_attributions (a JSON array of arrays
+ *  of {name, z_score} objects, parallel to `coordinates`). Tolerant of a
+ *  missing/malformed field — returns [] for the whole frame, or [] for any
+ *  individual point's entry that doesn't parse, rather than throwing. */
+function parsePointFeatureAttributions(raw: unknown): FeatureAttribution[][] {
+  if (!Array.isArray(raw)) return []
+  return raw.map((pointAttrs): FeatureAttribution[] => {
+    if (!Array.isArray(pointAttrs)) return []
+    const result: FeatureAttribution[] = []
+    for (const entry of pointAttrs) {
+      if (
+        typeof entry === 'object' &&
+        entry !== null &&
+        typeof (entry as Record<string, unknown>).name === 'string' &&
+        typeof (entry as Record<string, unknown>).z_score === 'number'
+      ) {
+        result.push({
+          name: (entry as { name: string }).name,
+          z_score: (entry as { z_score: number }).z_score,
+        })
+      }
+    }
+    return result
+  })
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -468,6 +510,7 @@ export function useVectorStream(): VectorStreamResult {
                 point_z_scores: parsePointZScores(msg.point_z_scores),
                 axes_are_raw_features:
                   typeof msg.axes_are_raw_features === 'boolean' ? msg.axes_are_raw_features : true,
+                point_feature_attributions: parsePointFeatureAttributions(msg.point_feature_attributions),
               }
               liveFrameRef.current = frame
               setLiveFrame(frame)
@@ -521,6 +564,7 @@ export function useVectorStream(): VectorStreamResult {
               point_z_scores: parsePointZScores(obj.point_z_scores),
               axes_are_raw_features:
                 typeof obj.axes_are_raw_features === 'boolean' ? obj.axes_are_raw_features : true,
+              point_feature_attributions: parsePointFeatureAttributions(obj.point_feature_attributions),
             }
             liveFrameRef.current = synthesizedFrame
             setLiveFrame(synthesizedFrame)

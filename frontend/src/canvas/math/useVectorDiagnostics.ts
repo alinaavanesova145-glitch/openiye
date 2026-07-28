@@ -215,6 +215,14 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
       if (encoding && encoding.encodedCategoricalColumns > 0) {
         body.encoding_summary = toWireEncodingSummary(encoding)
       }
+      // One name per final matrix column (2026-07-31 sprint) — lets the
+      // backend attribute an anomaly back to a real field name instead of
+      // an opaque axis. Omitted when there's nothing real to send (e.g. a
+      // headerless NPY upload, or a bare array-of-arrays JSON file), so the
+      // backend's existing axis-based fallback applies exactly as before.
+      if (encoding && encoding.featureNames.length > 0) {
+        body.column_names = encoding.featureNames
+      }
       const response = await fetch(`${API_BASE}/api/canvas/vectors`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

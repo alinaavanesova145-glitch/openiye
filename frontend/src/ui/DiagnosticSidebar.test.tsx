@@ -29,6 +29,7 @@ function makeFrame(overrides: Partial<VectorFrame> = {}): VectorFrame {
     },
     point_z_scores: [],
     axes_are_raw_features: true,
+    point_feature_attributions: [],
     ...overrides,
   }
 }

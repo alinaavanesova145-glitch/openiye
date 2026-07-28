@@ -18,6 +18,7 @@ import logging
 import threading
 import uuid
 import requests
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional, Dict
 
@@ -171,6 +172,77 @@ def compute_z_scores(coords: NDArray[np.float64]) -> NDArray[np.float64]:
     safe_stds = np.where(stds > 0.0, stds, 1.0)
     result: NDArray[np.float64] = np.abs((coords - means) / safe_stds)
     return result
+
+
+#: Top-N named features cited per point — enough for a "primarily X, with a
+#: secondary contribution from Y" narrative without an unbounded payload.
+FEATURE_ATTRIBUTION_TOP_K: int = 2
+
+
+@dataclass
+class FeatureAttribution:
+    name: str
+    z_score: float
+
+
+def compute_feature_attributions(
+    data_2d: NDArray[np.float64],
+    feature_names: list[str] | None,
+    top_k: int = FEATURE_ATTRIBUTION_TOP_K,
+) -> list[list[FeatureAttribution]]:
+    """
+    Per point, the top-`top_k` *original* fields (not raw matrix columns)
+    by deviation magnitude — computed on the pre-reduction feature matrix
+    (2026-07-31 sprint), not the post-UMAP 3D output compute_z_scores
+    operates on. This is a deliberately different computation: after a
+    real UMAP embedding, an output axis is a nonlinear combination of every
+    input column, so there is no principled "axis 2 is column 3" mapping —
+    but a per-*original-column* Z-score, computed before reduction, is
+    always well-defined regardless of whether reduction happened.
+
+    A one-hot-expanded field's several output columns all share one name
+    (see EncodingSummary.expanded_column_names) — grouped here by taking
+    the max |z| within each name's column group, so a spike in any single
+    category column still attributes back to the one human-readable field
+    name, not an opaque encoded dimension.
+
+    Args:
+        data_2d: 2D array of shape (n_samples, n_features) — the full
+            feature matrix as it enters reduce_to_3d, i.e. *before* any
+            dimensionality reduction.
+        feature_names: one name per column of `data_2d`, or None when no
+            real names are available. A length mismatch against
+            `data_2d.shape[1]` is treated the same as None — attribution
+            is a narrative-quality feature, not worth failing the request
+            over, and misaligned names would be actively misleading.
+        top_k: how many top-attributed fields to keep per point.
+
+    Returns:
+        One list per point (possibly empty — the explicit "no real name
+        available, fall back to generic phrasing" signal), each containing
+        up to `top_k` FeatureAttribution entries sorted by descending |z|.
+    """
+    n_samples = data_2d.shape[0]
+    if feature_names is None or len(feature_names) != data_2d.shape[1]:
+        return [[] for _ in range(n_samples)]
+
+    z_scores = compute_z_scores(data_2d)  # (n_samples, n_features)
+
+    # Group column indices by original field name, preserving first-seen
+    # order (stable, deterministic output).
+    name_to_columns: dict[str, list[int]] = {}
+    for j, name in enumerate(feature_names):
+        name_to_columns.setdefault(name, []).append(j)
+
+    attributions: list[list[FeatureAttribution]] = []
+    for i in range(n_samples):
+        per_field: list[FeatureAttribution] = [
+            FeatureAttribution(name=name, z_score=float(np.max(z_scores[i, cols])))
+            for name, cols in name_to_columns.items()
+        ]
+        per_field.sort(key=lambda a: abs(a.z_score), reverse=True)
+        attributions.append(per_field[:top_k])
+    return attributions
 
 
 def detect_anomalies(
@@ -363,6 +435,7 @@ def explain_anomaly(
     z_scores: Dict[str, float],
     cluster_label: int,
     axes_are_raw_features: bool = True,
+    feature_attributions: Optional[list] = None,
     timeout: float = 30.0,
 ) -> Optional[str]:
     """
@@ -382,7 +455,16 @@ def explain_anomaly(
         axes_are_raw_features: whether x/y/z are literal source features
             (true for <=3-feature data or the small-n truncation fallback)
             or an abstract UMAP embedding (false) — keeps the narrative
-            honest about what a deviating axis actually means.
+            honest about what a deviating axis actually means. Only used
+            as a fallback when feature_attributions is empty/None.
+        feature_attributions: optional list of {"name": str, "z_score":
+            float} dicts (2026-07-31 sprint) — the top named original
+            fields driving this point's anomaly, e.g. from
+            iye.compute_feature_attributions or a frame broadcast over
+            iye.server's WebSocket, which now carries
+            point_feature_attributions per point. When omitted, the
+            narrative falls back to the older axis-based phrasing, same as
+            a request with no real column names ever had.
         timeout: request timeout in seconds. Defaults to 30s (not the 2s
             show() uses for its fire-and-forget ingest) because Ollama
             generation empirically takes ~15-22s and a script calling this
@@ -392,13 +474,15 @@ def explain_anomaly(
         The explanation string, or None if the backend was unreachable or
         returned a structured error (logged either way).
     """
-    payload = {
+    payload: Dict[str, Any] = {
         "point_index": point_index,
         "coordinates": coordinates,
         "z_scores": z_scores,
         "cluster_label": cluster_label,
         "axes_are_raw_features": axes_are_raw_features,
     }
+    if feature_attributions:
+        payload["feature_attributions"] = feature_attributions
     response = _post_to_active_backend(
         "/api/canvas/anomaly/explain", payload, timeout=timeout, accept_error_responses=True
     )
@@ -417,6 +501,9 @@ __all__ = [
     "cluster",
     "detect_anomalies",
     "compute_z_scores",
+    "compute_feature_attributions",
+    "FeatureAttribution",
+    "FEATURE_ATTRIBUTION_TOP_K",
     "explain_anomaly",
     "MIN_SAMPLES_FOR_REDUCTION",
 ]
