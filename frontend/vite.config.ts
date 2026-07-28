@@ -1,7 +1,12 @@
 /// <reference types="vitest/config" />
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tsconfigPaths from 'vite-tsconfig-paths'
+
+// ESM has no __dirname — package.json declares "type": "module".
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
   plugins: [react(), tsconfigPaths()],
@@ -19,6 +24,14 @@ export default defineConfig({
     // already chose to split out rather than shrink further.
     chunkSizeWarningLimit: 1100,
     rollupOptions: {
+      // Additive multi-page entry (2026-07-30 sprint) — the existing app
+      // (index.html -> src/main.tsx) is completely untouched; landing.html
+      // is a second, independent entry for the public marketing page.
+      // Without this, a production build would only emit index.html.
+      input: {
+        main: resolve(__dirname, 'index.html'),
+        landing: resolve(__dirname, 'landing.html'),
+      },
       output: {
         // three/@react-three/* are the vast majority of the bundle and are
         // only reachable from the lazy-loaded VectorViewport — naming this

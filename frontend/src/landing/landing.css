@@ -1,0 +1,376 @@
+/**
+ * landing.css — B2B landing page design system (2026-07-30 sprint).
+ *
+ * Pitch-black-with-depth (#0a0a0d, not pure #000) + the product's existing
+ * blush-pink (#ffb6c1) and cyan (#5fd9e8) accents. Contrast verified via a
+ * WCAG relative-luminance script, not eyeballed — see
+ * docs/idealization_report.md, 2026-07-30 sprint: #ffb6c1 on #0a0a0d is
+ * 11.97:1, #5fd9e8 on #0a0a0d is 11.84:1, white on #0a0a0d is 19.77:1 —
+ * all comfortably clear of the 4.5:1 AA-normal-text threshold, so no
+ * separate "lightened for text" variant was needed; the existing saturated
+ * tones are safe for body copy as-is.
+ */
+
+:root {
+  --landing-bg: #0a0a0d;
+  --landing-bg-raised: #111116;
+  --landing-pink: #ffb6c1;
+  --landing-pink-dim: rgba(255, 182, 193, 0.12);
+  --landing-pink-border: rgba(255, 182, 193, 0.22);
+  --landing-cyan: #5fd9e8;
+  --landing-text: rgba(255, 255, 255, 0.9);
+  --landing-text-muted: rgba(255, 255, 255, 0.56);
+  --landing-text-faint: rgba(255, 255, 255, 0.36);
+}
+
+.landing-root {
+  background: var(--landing-bg);
+  color: var(--landing-text);
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+.landing-section {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 96px 24px;
+}
+
+.landing-section--tight {
+  padding-top: 56px;
+  padding-bottom: 56px;
+}
+
+.landing-eyebrow {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--landing-pink);
+  margin-bottom: 16px;
+}
+
+.landing-h1 {
+  font-size: clamp(32px, 5vw, 56px);
+  font-weight: 600;
+  line-height: 1.12;
+  letter-spacing: -0.01em;
+  margin: 0 0 20px 0;
+  max-width: 760px;
+}
+
+.landing-h1 em {
+  font-style: normal;
+  color: var(--landing-pink);
+}
+
+.landing-sub {
+  font-size: clamp(15px, 2vw, 18px);
+  line-height: 1.6;
+  color: var(--landing-text-muted);
+  max-width: 620px;
+  margin: 0 0 36px 0;
+}
+
+.landing-h2 {
+  font-size: clamp(24px, 3.5vw, 34px);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 14px 0;
+}
+
+.landing-p {
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--landing-text-muted);
+  max-width: 640px;
+}
+
+/* ── CTA buttons ─────────────────────────────────────────────────────────── */
+
+.landing-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 13px 26px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.landing-cta:hover {
+  transform: translateY(-1px);
+}
+
+.landing-cta--primary {
+  background: var(--landing-pink);
+  color: #14080b;
+}
+
+.landing-cta--primary:hover {
+  box-shadow: 0 0 24px rgba(255, 182, 193, 0.35);
+}
+
+.landing-cta--secondary {
+  background: transparent;
+  border-color: var(--landing-pink-border);
+  color: var(--landing-pink);
+}
+
+.landing-cta--secondary:hover {
+  background: var(--landing-pink-dim);
+}
+
+/* ── Hero ────────────────────────────────────────────────────────────────── */
+
+.landing-hero {
+  padding: 72px 24px 40px 24px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.landing-hero-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px 24px 0 24px;
+}
+
+.landing-wordmark {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 14px;
+  letter-spacing: 0.14em;
+  color: var(--landing-text);
+  text-decoration: none;
+}
+
+.landing-wordmark em {
+  font-style: normal;
+  color: var(--landing-pink);
+}
+
+.landing-hero-cta-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 48px;
+}
+
+/* ── Demo widget ─────────────────────────────────────────────────────────── */
+
+.demo-widget {
+  border: 1px solid var(--landing-pink-border);
+  border-radius: 10px;
+  background: var(--landing-bg-raised);
+  overflow: hidden;
+}
+
+.demo-widget-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--landing-pink-border);
+}
+
+.demo-widget-badge {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--landing-pink);
+}
+
+.demo-widget-caption {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--landing-text-faint);
+}
+
+.demo-widget-canvas {
+  position: relative;
+  width: 100%;
+  height: 480px;
+  background: #000000;
+}
+
+.demo-widget-hint {
+  position: absolute;
+  bottom: 14px;
+  left: 18px;
+  margin: 0;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--landing-text-faint);
+  pointer-events: none;
+}
+
+.demo-widget-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: lowercase;
+  color: rgba(255, 182, 193, 0.35);
+}
+
+/* ── How it works ────────────────────────────────────────────────────────── */
+
+.landing-steps {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 20px;
+  margin-top: 40px;
+}
+
+.landing-step {
+  padding: 20px;
+  border: 1px solid var(--landing-pink-border);
+  border-radius: 8px;
+  background: var(--landing-bg-raised);
+}
+
+.landing-step-number {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 11px;
+  color: var(--landing-pink);
+  letter-spacing: 0.1em;
+  margin-bottom: 10px;
+}
+
+.landing-step-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.landing-step-body {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--landing-text-muted);
+}
+
+/* ── Feature grid ────────────────────────────────────────────────────────── */
+
+.landing-features {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+  margin-top: 40px;
+}
+
+.landing-feature {
+  padding: 24px;
+  border: 1px solid var(--landing-pink-border);
+  border-radius: 8px;
+}
+
+.landing-feature-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--landing-pink);
+}
+
+.landing-feature-body {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--landing-text-muted);
+}
+
+/* ── CTA section ─────────────────────────────────────────────────────────── */
+
+.landing-cta-section {
+  text-align: center;
+  border-top: 1px solid var(--landing-pink-border);
+  border-bottom: 1px solid var(--landing-pink-border);
+}
+
+.landing-cta-section .landing-h2 {
+  max-width: 560px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.landing-cta-section .landing-p {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.landing-cta-note {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--landing-text-faint);
+}
+
+/* ── Footer ──────────────────────────────────────────────────────────────── */
+
+.landing-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 32px 24px;
+  max-width: 1080px;
+  margin: 0 auto;
+  font-size: 12px;
+  color: var(--landing-text-faint);
+}
+
+.landing-footer a {
+  color: var(--landing-text-faint);
+}
+
+.landing-footer a:hover {
+  color: var(--landing-pink);
+}
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+
+@media (max-width: 860px) {
+  .landing-steps {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .landing-features {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .landing-hero-top {
+    padding: 16px 16px 0 16px;
+  }
+  .landing-section {
+    padding: 64px 16px;
+  }
+  .landing-steps {
+    grid-template-columns: 1fr;
+  }
+  .demo-widget-canvas {
+    height: 340px;
+  }
+  .landing-hero-cta-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .landing-cta {
+    justify-content: center;
+  }
+}

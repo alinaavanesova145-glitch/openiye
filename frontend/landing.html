@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IYE — Drop a messy file, get an explained 3D anomaly map</title>
+    <meta
+      name="description"
+      content="IYE auto-encodes messy CSV/JSON files, reduces them to a navigable 3D anomaly map (UMAP + HDBSCAN), and explains every flagged point in plain English via a local LLM. Try the interactive demo — no upload required."
+    />
+
+    <!-- Open Graph / LinkedIn -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="IYE — Drop a messy file, get an explained 3D anomaly map" />
+    <meta
+      property="og:description"
+      content="Auto-encoding for messy data, 3D spatial anomaly detection, and LLM-grounded explanations for every flagged point. Try the live demo."
+    />
+    <!--
+      No og:image: no real 1200x630 preview asset exists yet, and SVG
+      og:image support is unreliable on LinkedIn/Twitter specifically — see
+      docs/idealization_report.md, 2026-07-30 sprint, "flagged as needing
+      real infrastructure before launch". Shipping a broken/unreliable
+      image reference would be worse than omitting it.
+    -->
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="IYE — Drop a messy file, get an explained 3D anomaly map" />
+    <meta
+      name="twitter:description"
+      content="Auto-encoding for messy data, 3D spatial anomaly detection, and LLM-grounded explanations for every flagged point. Try the live demo."
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/landing/main.tsx"></script>
+  </body>
+</html>

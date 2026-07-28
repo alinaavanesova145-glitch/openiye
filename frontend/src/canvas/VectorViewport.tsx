@@ -7,7 +7,7 @@ import { ConvexGeometry } from 'three/examples/jsm/geometries/ConvexGeometry.js'
 import { useVectorStream, DEFAULT_TEMPORAL_METRICS, HOT_REGIMES } from './math/useVectorStream'
 import type { TemporalMetrics, VectorCoordinate3D } from './math/useVectorStream'
 import { useAnomalyExplain } from './math/useAnomalyExplain'
-import type { ExplainablePoint } from './math/useAnomalyExplain'
+import type { AnomalyExplainState, ExplainablePoint } from './math/useAnomalyExplain'
 
 // ─── Design Tokens ────────────────────────────────────────────────────────────
 
@@ -313,7 +313,7 @@ const TracerLines = memo(function TracerLines({
 // ─── Pulsing Anomaly Beacons ───────────────────────────────────────────────────
 
 /** Snapshot of frame-level (not per-point) data shown in a beacon's hover tooltip. */
-interface BeaconTooltipInfo {
+export interface BeaconTooltipInfo {
   temporal: TemporalMetrics
   explanation: string | null
   status: 'NOMINAL' | 'ANOMALY'
@@ -547,7 +547,7 @@ const AnomalyBeacons = memo(function AnomalyBeacons({
 
 // ─── Composed Tactical Field ───────────────────────────────────────────────────
 
-interface TacticalFieldProps {
+export interface TacticalFieldProps {
   positions: Float32Array
   anomalyIndices: number[]
   clusterLabels: number[]
@@ -558,7 +558,11 @@ interface TacticalFieldProps {
   onExplainRequest: (point: ExplainablePoint) => void
 }
 
-const TacticalVectorField = memo(function TacticalVectorField({
+/** Exported (2026-07-30 sprint) so the marketing landing page's fixture-data
+ *  demo widget can render the exact same beacon/hull/tracer/severity/click
+ *  interaction the real product uses, rather than a re-implementation that
+ *  would inevitably drift out of visual sync over time. */
+export const TacticalVectorField = memo(function TacticalVectorField({
   positions,
   anomalyIndices,
   clusterLabels,
@@ -614,6 +618,49 @@ function ViewportWireframe() {
       <boxGeometry args={[4, 4, 4]} />
       <meshBasicMaterial color="#ffffff" wireframe={true} transparent={true} opacity={0.15} />
     </mesh>
+  )
+}
+
+// ─── Per-point Narrative Panel ─────────────────────────────────────────────────
+
+export interface PointNarrativePanelProps {
+  explainState: AnomalyExplainState
+  dismiss: () => void
+}
+
+/** Exported (2026-07-30 sprint, alongside TacticalVectorField) so the
+ *  landing page's fixture demo shares the exact click → narrative panel UI
+ *  the real product uses, rather than a parallel re-implementation. */
+export function PointNarrativePanel({ explainState, dismiss }: PointNarrativePanelProps) {
+  if (explainState.status === 'idle') return null
+  return (
+    // Per-point narrative panel — a user actively clicked a specific
+    // beacon; distinct from any passive frame-level card. Keyed on
+    // pointIndex so switching between points remounts (and re-animates)
+    // rather than jarringly mutating in place.
+    <div
+      key={explainState.pointIndex}
+      className={`point-narrative-panel point-narrative-panel--${explainState.status}`}
+    >
+      <div className="status-header">
+        <span>POINT #{explainState.pointIndex}</span>
+        <button
+          type="button"
+          className="point-narrative-dismiss"
+          onClick={dismiss}
+          aria-label="dismiss narrative"
+        >
+          ×
+        </button>
+      </div>
+      {explainState.status === 'loading' && (
+        <p className="point-narrative-status">generating explanation…</p>
+      )}
+      {explainState.status === 'success' && (
+        <p className="explanation-text">{explainState.explanation}</p>
+      )}
+      {explainState.status === 'error' && <p className="point-narrative-error">{explainState.reason}</p>}
+    </div>
   )
 }
 
@@ -724,37 +771,7 @@ export default function VectorViewport() {
         </div>
       )}
 
-      {/* Per-point narrative panel — a user actively clicked a specific
-          beacon; distinct from the passive frame-level card above. Keyed on
-          pointIndex so switching between points remounts (and re-animates)
-          rather than jarringly mutating in place. */}
-      {explainState.status !== 'idle' && (
-        <div
-          key={explainState.pointIndex}
-          className={`point-narrative-panel point-narrative-panel--${explainState.status}`}
-        >
-          <div className="status-header">
-            <span>POINT #{explainState.pointIndex}</span>
-            <button
-              type="button"
-              className="point-narrative-dismiss"
-              onClick={dismiss}
-              aria-label="dismiss narrative"
-            >
-              ×
-            </button>
-          </div>
-          {explainState.status === 'loading' && (
-            <p className="point-narrative-status">generating explanation…</p>
-          )}
-          {explainState.status === 'success' && (
-            <p className="explanation-text">{explainState.explanation}</p>
-          )}
-          {explainState.status === 'error' && (
-            <p className="point-narrative-error">{explainState.reason}</p>
-          )}
-        </div>
-      )}
+      <PointNarrativePanel explainState={explainState} dismiss={dismiss} />
     </div>
   )
 }
