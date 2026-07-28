@@ -5,7 +5,9 @@ import { Canvas, useFrame } from '@react-three/fiber'
 import { OrbitControls, Line, Html } from '@react-three/drei'
 import { ConvexGeometry } from 'three/examples/jsm/geometries/ConvexGeometry.js'
 import { useVectorStream, DEFAULT_TEMPORAL_METRICS, HOT_REGIMES } from './math/useVectorStream'
-import type { TemporalMetrics } from './math/useVectorStream'
+import type { TemporalMetrics, VectorCoordinate3D } from './math/useVectorStream'
+import { useAnomalyExplain } from './math/useAnomalyExplain'
+import type { ExplainablePoint } from './math/useAnomalyExplain'
 
 // ─── Design Tokens ────────────────────────────────────────────────────────────
 
@@ -38,6 +40,60 @@ export function computeBeaconPulseFrequencyHz(velocity: number): number {
 /** Pulse amplitude scales with composite_smoothed, floored at BASE_AMPLITUDE (no upper clamp). */
 export function computeBeaconPulseAmplitude(compositeSmoothed: number): number {
   return Math.max(BASE_AMPLITUDE, BASE_AMPLITUDE + compositeSmoothed * COMPOSITE_AMP_SCALE)
+}
+
+// ─── Severity-based visual encoding ────────────────────────────────────────────
+// Grounded in the point's own peak Z-score (backend's point_z_scores, additive
+// 2026-07-29 sprint) — not a fabricated/arbitrary ranking. SEVERITY_Z_FLOOR
+// matches the backend's own anomaly threshold (_ZSCORE_THRESHOLD=2.5 in
+// sdk/iye): every beacon is already >= that, so severity measures *how much*
+// past the threshold a point is, not whether it crossed it at all.
+
+export const SEVERITY_Z_FLOOR = 2.5
+export const SEVERITY_Z_CEIL = 6.0
+const SEVERITY_MILD_COLOR = '#ffb020'
+
+function clamp01(v: number): number {
+  return Math.min(1, Math.max(0, v))
+}
+
+/** 0 (just past the anomaly threshold) .. 1 (extreme) — normalized severity
+ *  from a point's peak Z-score across its 3 axes. */
+export function computeSeverity(maxAbsZ: number): number {
+  return clamp01((maxAbsZ - SEVERITY_Z_FLOOR) / (SEVERITY_Z_CEIL - SEVERITY_Z_FLOOR))
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  const n = parseInt(hex.slice(1), 16)
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+}
+
+function rgbToHex([r, g, b]: [number, number, number]): string {
+  const toHex = (c: number): string => Math.round(clamp01(c / 255) * 255).toString(16).padStart(2, '0')
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`
+}
+
+/** Amber (mild) -> the existing intense red (extreme), so the most
+ *  anomalous points read as visually distinct at a glance. */
+export function computeSeverityColor(maxAbsZ: number): string {
+  const t = computeSeverity(maxAbsZ)
+  const mild = hexToRgb(SEVERITY_MILD_COLOR)
+  const extreme = hexToRgb(COLORS.anomaly)
+  const lerped: [number, number, number] = [
+    mild[0] + (extreme[0] - mild[0]) * t,
+    mild[1] + (extreme[1] - mild[1]) * t,
+    mild[2] + (extreme[2] - mild[2]) * t,
+  ]
+  return rgbToHex(lerped)
+}
+
+/** Up to 50% larger at extreme severity — multiplies the existing pulse scale. */
+export function computeSeverityScale(maxAbsZ: number): number {
+  return 1 + computeSeverity(maxAbsZ) * 0.5
+}
+
+function maxAbsAxis(v: VectorCoordinate3D): number {
+  return Math.max(Math.abs(v.x), Math.abs(v.y), Math.abs(v.z))
 }
 
 // ─── Mock Seed Data (only used before a real frame arrives) ──────────────────
@@ -261,6 +317,9 @@ interface BeaconTooltipInfo {
   temporal: TemporalMetrics
   explanation: string | null
   status: 'NOMINAL' | 'ANOMALY'
+  /** Additive (2026-07-29 sprint) — passed through to the per-point explain
+   *  request; see VectorFrame.axes_are_raw_features. */
+  axesAreRawFeatures: boolean
 }
 
 /** Tooltip text while the narrative is still pending vs. resolved (or a nominal frame). */
@@ -277,6 +336,13 @@ interface AnomalyBeaconProps {
   anomalyIndex: number
   temporalRef: MutableRefObject<TemporalMetrics>
   tooltipInfo: BeaconTooltipInfo
+  /** This point's own peak Z-score across axes (backend's point_z_scores,
+   *  additive 2026-07-29 sprint) — drives severity color/size, independent
+   *  of the frame-level temporal stats above. */
+  pointZScore: VectorCoordinate3D
+  clusterLabel: number
+  isSelected: boolean
+  onExplainRequest: (point: ExplainablePoint) => void
 }
 
 const AnomalyBeacon = memo(function AnomalyBeacon({
@@ -284,11 +350,19 @@ const AnomalyBeacon = memo(function AnomalyBeacon({
   anomalyIndex,
   temporalRef,
   tooltipInfo,
+  pointZScore,
+  clusterLabel,
+  isSelected,
+  onExplainRequest,
 }: AnomalyBeaconProps) {
   const meshRef = useRef<THREE.Mesh>(null)
   const materialRef = useRef<THREE.MeshBasicMaterial>(null)
   const phase = useRef(Math.random() * Math.PI * 2).current
   const [hovered, setHovered] = useState(false)
+
+  const severity = maxAbsAxis(pointZScore)
+  const severityColor = computeSeverityColor(severity)
+  const severityScale = computeSeverityScale(severity)
 
   useFrame(({ clock }) => {
     // Escalating anomalies (high velocity / composite_smoothed) pulse faster and
@@ -302,7 +376,7 @@ const AnomalyBeacon = memo(function AnomalyBeacon({
     const pulse = 1 + Math.sin(t) * 0.4 * amplitude
 
     if (meshRef.current) {
-      meshRef.current.scale.setScalar(pulse * 0.1)
+      meshRef.current.scale.setScalar(pulse * 0.1 * severityScale)
       meshRef.current.rotation.x += 0.03
       meshRef.current.rotation.y += 0.045
       meshRef.current.position.set(
@@ -334,9 +408,24 @@ const AnomalyBeacon = memo(function AnomalyBeacon({
           setHovered(false)
           document.body.style.cursor = 'auto'
         }}
+        onClick={(e) => {
+          e.stopPropagation()
+          onExplainRequest({
+            pointIndex: anomalyIndex,
+            coordinates: { x: position[0], y: position[1], z: position[2] },
+            zScores: pointZScore,
+            clusterLabel,
+            axesAreRawFeatures: tooltipInfo.axesAreRawFeatures,
+          })
+        }}
       >
         <icosahedronGeometry args={[1, 0]} />
-        <meshBasicMaterial ref={materialRef} color={COLORS.anomaly} transparent opacity={0.9} />
+        <meshBasicMaterial
+          ref={materialRef}
+          color={isSelected ? COLORS.tracer : severityColor}
+          transparent
+          opacity={0.9}
+        />
         {hovered && (
           <Html position={[0, 1.8, 0]} center distanceFactor={9} style={{ pointerEvents: 'none' }}>
             <div className="beacon-tooltip">
@@ -374,6 +463,7 @@ const AnomalyBeacon = memo(function AnomalyBeacon({
                   {resolveExplanationDisplay(tooltipInfo.status, tooltipInfo.explanation)}
                 </p>
               )}
+              <p className="beacon-tooltip-hint">click for this point&rsquo;s narrative</p>
             </div>
           </Html>
         )}
@@ -395,15 +485,25 @@ const AnomalyBeacon = memo(function AnomalyBeacon({
 interface BeaconsProps {
   positions: Float32Array
   anomalyIndices: number[]
+  clusterLabels: number[]
+  pointZScores: VectorCoordinate3D[]
   temporalRef: MutableRefObject<TemporalMetrics>
   tooltipInfo: BeaconTooltipInfo
+  selectedPointIndex: number | null
+  onExplainRequest: (point: ExplainablePoint) => void
 }
+
+const EMPTY_Z_SCORE: VectorCoordinate3D = { x: 0, y: 0, z: 0 }
 
 const AnomalyBeacons = memo(function AnomalyBeacons({
   positions,
   anomalyIndices,
+  clusterLabels,
+  pointZScores,
   temporalRef,
   tooltipInfo,
+  selectedPointIndex,
+  onExplainRequest,
 }: BeaconsProps) {
   const pointCount = positions.length / 3
   const validIndices = useMemo(
@@ -435,6 +535,10 @@ const AnomalyBeacons = memo(function AnomalyBeacons({
           anomalyIndex={idx}
           temporalRef={temporalRef}
           tooltipInfo={tooltipInfo}
+          pointZScore={pointZScores[idx] ?? EMPTY_Z_SCORE}
+          clusterLabel={clusterLabels[idx] ?? -1}
+          isSelected={selectedPointIndex === idx}
+          onExplainRequest={onExplainRequest}
         />
       ))}
     </>
@@ -447,16 +551,22 @@ interface TacticalFieldProps {
   positions: Float32Array
   anomalyIndices: number[]
   clusterLabels: number[]
+  pointZScores: VectorCoordinate3D[]
   temporalRef: MutableRefObject<TemporalMetrics>
   tooltipInfo: BeaconTooltipInfo
+  selectedPointIndex: number | null
+  onExplainRequest: (point: ExplainablePoint) => void
 }
 
 const TacticalVectorField = memo(function TacticalVectorField({
   positions,
   anomalyIndices,
   clusterLabels,
+  pointZScores,
   temporalRef,
   tooltipInfo,
+  selectedPointIndex,
+  onExplainRequest,
 }: TacticalFieldProps) {
   const anomalySet = useMemo(() => new Set(anomalyIndices), [anomalyIndices])
   const nominalIndices = useMemo(() => {
@@ -486,8 +596,12 @@ const TacticalVectorField = memo(function TacticalVectorField({
       <AnomalyBeacons
         positions={positions}
         anomalyIndices={anomalyIndices}
+        clusterLabels={clusterLabels}
+        pointZScores={pointZScores}
         temporalRef={temporalRef}
         tooltipInfo={tooltipInfo}
+        selectedPointIndex={selectedPointIndex}
+        onExplainRequest={onExplainRequest}
       />
     </>
   )
@@ -505,10 +619,13 @@ function ViewportWireframe() {
 
 // ─── Main Viewport ────────────────────────────────────────────────────────────
 
+const EMPTY_Z_SCORE_ARRAY: VectorCoordinate3D[] = []
+
 export default function VectorViewport() {
   const { positions, anomalyIndices, streamState, liveFrame, temporalRef, narrativeHistory } =
     useVectorStream()
   const [mockFrame] = useState(buildMockFrame)
+  const { explainState, explainPoint, dismiss } = useAnomalyExplain()
 
   const hasLiveData = positions.length > 0
   const activePositions = hasLiveData ? positions : mockFrame.positions
@@ -516,10 +633,13 @@ export default function VectorViewport() {
   const activeClusterLabels = hasLiveData
     ? (liveFrame?.cluster_labels ?? EMPTY_NUMBER_ARRAY)
     : mockFrame.clusterLabels
+  const activePointZScores = hasLiveData ? (liveFrame?.point_z_scores ?? EMPTY_Z_SCORE_ARRAY) : EMPTY_Z_SCORE_ARRAY
 
   const pointCount = activePositions.length / 3
   const regime = liveFrame?.temporal.regime ?? DEFAULT_TEMPORAL_METRICS.regime
   const regimeColor = HOT_REGIMES.has(regime) ? COLORS.anomaly : COLORS.pink
+
+  const selectedPointIndex = explainState.status === 'idle' ? null : explainState.pointIndex
 
   // Keyed on liveFrame's identity (which only changes when a new frame message
   // or a matching narrative arrives) so AnomalyBeacon's memo isn't defeated by
@@ -529,6 +649,7 @@ export default function VectorViewport() {
       temporal: liveFrame?.temporal ?? DEFAULT_TEMPORAL_METRICS,
       explanation: liveFrame?.explanation ?? null,
       status: liveFrame?.status ?? 'NOMINAL',
+      axesAreRawFeatures: liveFrame?.axes_are_raw_features ?? true,
     }),
     [liveFrame],
   )
@@ -564,8 +685,11 @@ export default function VectorViewport() {
           positions={activePositions}
           anomalyIndices={activeAnomalyIndices}
           clusterLabels={activeClusterLabels}
+          pointZScores={activePointZScores}
           temporalRef={temporalRef}
           tooltipInfo={tooltipInfo}
+          selectedPointIndex={selectedPointIndex}
+          onExplainRequest={explainPoint}
         />
         <OrbitControls enableZoom={true} makeDefault />
       </Canvas>
@@ -596,6 +720,38 @@ export default function VectorViewport() {
                   </p>
                 ))}
             </div>
+          )}
+        </div>
+      )}
+
+      {/* Per-point narrative panel — a user actively clicked a specific
+          beacon; distinct from the passive frame-level card above. Keyed on
+          pointIndex so switching between points remounts (and re-animates)
+          rather than jarringly mutating in place. */}
+      {explainState.status !== 'idle' && (
+        <div
+          key={explainState.pointIndex}
+          className={`point-narrative-panel point-narrative-panel--${explainState.status}`}
+        >
+          <div className="status-header">
+            <span>POINT #{explainState.pointIndex}</span>
+            <button
+              type="button"
+              className="point-narrative-dismiss"
+              onClick={dismiss}
+              aria-label="dismiss narrative"
+            >
+              ×
+            </button>
+          </div>
+          {explainState.status === 'loading' && (
+            <p className="point-narrative-status">generating explanation…</p>
+          )}
+          {explainState.status === 'success' && (
+            <p className="explanation-text">{explainState.explanation}</p>
+          )}
+          {explainState.status === 'error' && (
+            <p className="point-narrative-error">{explainState.reason}</p>
           )}
         </div>
       )}

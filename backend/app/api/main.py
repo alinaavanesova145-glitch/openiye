@@ -82,15 +82,27 @@ async def _startup_llm_healthcheck() -> None:
         _set_llm_status("offline")
 
 
-async def generate_anomaly_explanation(metrics_summary: str) -> str:
-    """Queries local LLaMA via Ollama to generate a crisp tactical explanation."""
+LLM_FALLBACK_TEXT = "Telemetry Alert: Structural vector variance exceeded nominal Z-score boundary."
+
+
+async def generate_anomaly_explanation(metrics_summary: str, timeout: float = 10.0) -> str:
+    """Queries local LLaMA via Ollama to generate a crisp tactical explanation.
+
+    `timeout` defaults to 10.0s (unchanged from before this sprint) for the
+    fire-and-forget per-frame narrative path (_narrate), where a fallback
+    string is an acceptable outcome for a passive broadcast nobody is
+    actively waiting on. The on-demand per-point explain endpoint (2026-07-29
+    sprint) passes a longer explicit timeout instead — a user who clicked a
+    point IS actively waiting, and Ollama generation empirically takes
+    ~15-22s on this hardware, comfortably past the old default.
+    """
     prompt = (
         f"You are the IYE AI Core. Analyze these structural anomaly metrics: {metrics_summary}. "
         "In 2 sentences or less, provide a highly professional, technical engineering explanation "
         "of what structural variance or spatial drift caused this outlier. Be direct and concise."
     )
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 OLLAMA_API_URL,
                 json={"model": "llama3", "prompt": prompt, "stream": False}
@@ -101,7 +113,7 @@ async def generate_anomaly_explanation(metrics_summary: str) -> str:
     except Exception as e:
         logger.warning("LLaMA inference failed, falling back to basic telemetry: %s", e)
     _set_llm_status("offline")
-    return "Telemetry Alert: Structural vector variance exceeded nominal Z-score boundary."
+    return LLM_FALLBACK_TEXT
 
 # ─── FastAPI Application ──────────────────────────────────────────────────────
 
@@ -180,6 +192,41 @@ async def _ingest_validation_error_handler(_request, exc: IngestValidationError)
         status_code=422,
         content={
             "error": "empty_or_invalid_payload",
+            "status": 422,
+            "detail": exc.detail,
+            "stage": exc.stage,
+        },
+    )
+
+
+# ─── Structured anomaly-explain errors ─────────────────────────────────────────
+# 2026-07-29 sprint: same flat-envelope pattern as IngestValidationError above,
+# for the /api/canvas/anomaly/explain endpoint's distinct failure domain —
+# a malformed request (stage="validation") or the LLM being unreachable/timing
+# out (stage="llm_unavailable"). Kept as its own exception/handler pair
+# (rather than reusing IngestValidationError) because "empty_or_invalid_payload"
+# doesn't describe an LLM failure — the JSON *shape* is identical, matching
+# the established convention, but the `error` tag and status semantics are
+# specific to this endpoint.
+
+
+class AnomalyExplainError(Exception):
+    """Raised by /api/canvas/anomaly/explain when the request is malformed
+    (stage="validation") or the local LLM couldn't produce an explanation
+    (stage="llm_unavailable" — unreachable, non-200, or timed out)."""
+
+    def __init__(self, detail: str, stage: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.stage = stage
+
+
+@app.exception_handler(AnomalyExplainError)
+async def _anomaly_explain_error_handler(_request, exc: AnomalyExplainError):
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": "explain_failed",
             "status": 422,
             "detail": exc.detail,
             "stage": exc.stage,
@@ -311,6 +358,71 @@ class MatrixUploadRequest(BaseModel):
     matrix: Optional[List[List[Any]]] = None
     encoding_summary: Optional[EncodingSummary] = None
 
+
+class AnomalyExplainRequest(BaseModel):
+    """Request body for POST /api/canvas/anomaly/explain (2026-07-29 sprint).
+
+    Stateless by design: the backend keeps no server-side frame/point cache
+    (frames are broadcast-only), and the product already supports a live,
+    continuously-streamed use case (repeated iye.show() calls) where "the
+    uploaded file" isn't even a coherent concept to look up — so the
+    frontend echoes back exactly the point data it already has from the
+    frame that produced it, rather than the backend needing to remember
+    anything between requests.
+    """
+    point_index: int
+    coordinates: Coordinate3D
+    z_scores: Coordinate3D
+    cluster_label: int
+    axes_are_raw_features: bool = True
+
+
+class AnomalyExplainResponse(BaseModel):
+    point_index: int
+    explanation: str
+
+
+# ─── Narrative grounding ───────────────────────────────────────────────────────
+
+# On-demand explain requests are actively awaited by a user who just clicked
+# a point — worth a much longer budget than the passive fire-and-forget
+# per-frame narrative's 10s default (see generate_anomaly_explanation).
+# Ollama generation empirically takes ~15-22s on this hardware.
+EXPLAIN_LLM_TIMEOUT_SECONDS = 30.0
+
+
+def _build_point_explanation_summary(req: AnomalyExplainRequest) -> str:
+    """Grounds the LLM prompt in this specific point's actual computed
+    signal (dominant deviating axis + magnitude, cluster membership) rather
+    than generic filler — and is honest about what the axes mean: only
+    names a "measured feature" when axes_are_raw_features says that's
+    literally true, otherwise describes an abstract embedding axis instead
+    of fabricating a business-feature name for a UMAP-embedded dimension."""
+    axis_labels = ["x", "y", "z"]
+    coords = [req.coordinates.x, req.coordinates.y, req.coordinates.z]
+    zs = [req.z_scores.x, req.z_scores.y, req.z_scores.z]
+    dominant = max(range(3), key=lambda i: abs(zs[i]))
+
+    if req.axes_are_raw_features:
+        axis_desc = f"the {axis_labels[dominant]}-axis (a raw measured feature)"
+    else:
+        axis_desc = f"embedding axis {axis_labels[dominant]} (a UMAP-reduced dimension, not a single raw feature)"
+
+    cluster_desc = (
+        "flagged as noise (not part of any dense cluster)"
+        if req.cluster_label < 0
+        else f"a member of cluster {req.cluster_label}"
+    )
+
+    return (
+        f"point #{req.point_index} at coordinates "
+        f"({coords[0]:.3f}, {coords[1]:.3f}, {coords[2]:.3f}), "
+        f"z-scores ({zs[0]:.2f}, {zs[1]:.2f}, {zs[2]:.2f}) on (x, y, z). "
+        f"Deviates most on {axis_desc}, peak |z|={abs(zs[dominant]):.2f}. "
+        f"This point is {cluster_desc}."
+    )
+
+
 # ─── REST Routes ──────────────────────────────────────────────────────────────
 
 @app.get("/api/health", tags=["System"])
@@ -405,6 +517,12 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
             f"stable reduction — coordinates are the first 3 raw feature "
             f"columns (truncated), not a real dimensionality reduction."
         )
+    # x/y/z are literal source features whenever no real UMAP embedding
+    # happened — the <=3-feature passthrough, or the small-n truncation
+    # fallback above. Only a real UMAP reduction produces abstract embedded
+    # axes. Grounds the per-point explain endpoint's honesty about what a
+    # coordinate axis actually means — see VectorFramePayload.axes_are_raw_features.
+    axes_are_raw_features = n_features <= 3 or reduction_note is not None
 
     # Pipeline: reduce → cluster → detect anomalies. The precondition checks
     # above and inside reduce_to_3d/cluster handle every *known* degenerate
@@ -417,6 +535,7 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
         coords            = iye.reduce_to_3d(data_2d)
         labels            = iye.cluster(coords)
         anomaly_idx, expl = iye.detect_anomalies(coords)
+        point_z_scores    = iye.compute_z_scores(coords).tolist()
     except Exception as e:
         logger.exception(
             "Unexpected failure in reduce/cluster/detect_anomalies for a "
@@ -482,6 +601,8 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
         temporal        = temporal_metrics.model_dump(),
         encoding_summary = encoding_summary_dict,
         reduction_note   = reduction_note,
+        point_z_scores   = point_z_scores,
+        axes_are_raw_features = axes_are_raw_features,
     )
 
     # Broadcast cleanly to our explicit stream endpoint
@@ -499,6 +620,63 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
         _spawn_narrative_task(frame_id, metrics_summary)
 
     return payload
+
+
+@app.post(
+    "/api/canvas/anomaly/explain",
+    response_model=AnomalyExplainResponse,
+    tags=["Canvas"],
+)
+async def explain_anomaly_point(request: AnomalyExplainRequest):
+    """
+    On-demand, per-point narrative explanation (2026-07-29 sprint) — distinct
+    from the automatic, fire-and-forget, first-anomaly-only narrative
+    ingest_and_broadcast spawns per frame. A user clicked *this specific
+    point*; they're actively waiting for an answer, not looking for a passive
+    broadcast, so this is a direct request/response, not something pushed
+    over the shared /stream WebSocket (which fans out to every connected
+    client — reusing it here would leak one user's clicked-point explanation
+    to every other browser tab watching the same stream).
+    """
+    if request.point_index < 0:
+        raise AnomalyExplainError(
+            detail=f"point_index must be >= 0, got {request.point_index}",
+            stage="validation",
+        )
+
+    metrics_summary = _build_point_explanation_summary(request)
+    try:
+        explanation = await generate_anomaly_explanation(
+            metrics_summary, timeout=EXPLAIN_LLM_TIMEOUT_SECONDS
+        )
+    except Exception as e:
+        # generate_anomaly_explanation already catches its own httpx
+        # exceptions internally and returns a fallback string — this is a
+        # backstop for anything genuinely unanticipated, same discipline as
+        # ingest_and_broadcast's vectorization try/except.
+        logger.exception("Unexpected failure generating point explanation")
+        raise AnomalyExplainError(
+            detail=f"Narrative generation failed unexpectedly: {e}",
+            stage="llm_unavailable",
+        ) from e
+
+    if explanation == LLM_FALLBACK_TEXT:
+        # generate_anomaly_explanation never raises on an Ollama failure —
+        # it degrades to this fixed fallback string so the fire-and-forget
+        # per-frame narrative path never crashes a background task. This
+        # endpoint's caller is actively waiting on a specific answer, so
+        # that same fallback is surfaced here as a structured error instead
+        # of silently returning generic text disguised as a real answer.
+        # Compared against the exact string (not the racy, global, multi-
+        # request _llm_status flag, which could be stale or updated by a
+        # concurrent frame's unrelated narrative task) so this check is
+        # scoped to exactly what this request itself got back.
+        raise AnomalyExplainError(
+            detail="Local LLM is unreachable or timed out — no narrative could be generated",
+            stage="llm_unavailable",
+        )
+
+    return AnomalyExplainResponse(point_index=request.point_index, explanation=explanation)
 
 # ─── WebSocket Stream ─────────────────────────────────────────────────────────
 

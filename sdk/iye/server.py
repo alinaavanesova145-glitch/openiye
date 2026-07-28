@@ -91,6 +91,31 @@ class VectorFramePayload(BaseModel):
             "was used."
         ),
     )
+    point_z_scores: list[list[float]] = Field(
+        default_factory=list,
+        description=(
+            "Additive (2026-07-29 sprint) — one [x, y, z] absolute Z-score "
+            "triple per point, parallel to `coordinates` (see "
+            "iye.compute_z_scores). Grounds both severity-based visual "
+            "encoding and POST /api/canvas/anomaly/explain's per-point "
+            "narrative request — the frontend echoes a specific point's "
+            "triple back in that request rather than the backend needing "
+            "to look anything up server-side."
+        ),
+    )
+    axes_are_raw_features: bool = Field(
+        default=True,
+        description=(
+            "Additive (2026-07-29 sprint) — true when x/y/z map directly to "
+            "original input dimensions (the <=3-feature passthrough case, "
+            "or the small-n truncation fallback — see reduction_note), "
+            "false only when a real UMAP embedding was used (x/y/z are then "
+            "abstract embedded axes, not literal source features). Lets a "
+            "narrative honestly say 'the Nth measured value' only when "
+            "that's actually true, instead of fabricating meaning for an "
+            "opaque UMAP axis."
+        ),
+    )
 
 
 # ─── StreamHub ─────────────────────────────────────────────────────────────────

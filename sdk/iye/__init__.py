@@ -149,6 +149,30 @@ def cluster(coords: NDArray[np.float64]) -> NDArray[np.intp]:
 # ─── Anomaly Detection ────────────────────────────────────────────────────────
 
 
+def compute_z_scores(coords: NDArray[np.float64]) -> NDArray[np.float64]:
+    """
+    Per-point, per-axis absolute Z-score magnitude — the same computation
+    detect_anomalies uses internally to decide anomaly_indices, extracted so
+    a caller can also get the *magnitudes* (not just the pass/fail
+    threshold decision). Used by ingest_and_broadcast to populate the
+    response's point_z_scores, which grounds both severity-based visual
+    encoding and the per-point narrative explain endpoint (2026-07-29
+    sprint) — see backend/app/api/main.py.
+
+    Args:
+        coords: 2D array of shape (n_samples, 3).
+
+    Returns:
+        2D array of shape (n_samples, 3) — absolute Z-score per axis.
+    """
+    means = np.mean(coords, axis=0)
+    stds = np.std(coords, axis=0)
+    # Guard against zero-std axes (constant columns) — treat as non-anomalous
+    safe_stds = np.where(stds > 0.0, stds, 1.0)
+    result: NDArray[np.float64] = np.abs((coords - means) / safe_stds)
+    return result
+
+
 def detect_anomalies(
     coords: NDArray[np.float64],
 ) -> tuple[list[int], str]:
@@ -165,13 +189,7 @@ def detect_anomalies(
         Tuple of (anomaly_indices, explanation_text).
     """
     axis_labels = ["x", "y", "z"]
-    means = np.mean(coords, axis=0)
-    stds = np.std(coords, axis=0)
-
-    # Guard against zero-std axes (constant columns) — treat as non-anomalous
-    safe_stds = np.where(stds > 0.0, stds, 1.0)
-
-    z_scores = np.abs((coords - means) / safe_stds)
+    z_scores = compute_z_scores(coords)
     # A point is anomalous if any axis exceeds threshold
     anomalous_mask: NDArray[np.bool_] = np.any(
         z_scores > _ZSCORE_THRESHOLD, axis=1
@@ -213,6 +231,47 @@ def detect_anomalies(
 
 _CANDIDATE_PORTS = [8000, 8050, 8222]
 _cached_active_port = None
+
+
+def _post_to_active_backend(
+    path: str,
+    payload: Dict[str, Any],
+    timeout: float = 2.0,
+    accept_error_responses: bool = False,
+) -> Optional["requests.Response"]:
+    """Shared port-scanning POST logic — tries the cached working port
+    first (if any), then each candidate in turn, caching whichever one
+    responds for next time. Extracted from show() (2026-07-29 sprint) so
+    explain_anomaly() doesn't duplicate the same connection dance.
+
+    `accept_error_responses` controls what counts as "found the backend on
+    this port, stop scanning": show()'s fire-and-forget ingest only ever
+    cared about a clean 200 (unchanged default, exact pre-existing
+    behavior); explain_anomaly() needs a reached-but-rejected 4xx response
+    too — its structured `detail`/`stage` body is meaningful and worth
+    returning to the caller, not indistinguishable from "nothing is
+    listening on this port at all".
+
+    Returns the response (whatever its status, once accepted), or None if
+    every candidate port refused the connection outright.
+    """
+    global _cached_active_port
+
+    ports = []
+    if _cached_active_port is not None:
+        ports.append(_cached_active_port)
+    ports.extend([p for p in _CANDIDATE_PORTS if p != _cached_active_port])
+
+    for port in ports:
+        url = f"http://127.0.0.1:{port}{path}"
+        try:
+            response = requests.post(url, json=payload, timeout=timeout)
+            if response.status_code == 200 or accept_error_responses:
+                _cached_active_port = port
+                return response
+        except Exception:
+            continue
+    return None
 
 
 def _as_row_list(matrix: Any) -> Optional[list]:
@@ -291,27 +350,65 @@ def show(matrix: Any) -> None:
     if encoding_summary_payload is not None:
         payload["encoding_summary"] = encoding_summary_payload
 
-    # Order ports trying the cached working port first
-    ports = []
-    if _cached_active_port is not None:
-        ports.append(_cached_active_port)
-    ports.extend([p for p in _CANDIDATE_PORTS if p != _cached_active_port])
-
-    success = False
-    for port in ports:
-        url = f"http://127.0.0.1:{port}/api/canvas/vectors"
-        try:
-            response = requests.post(url, json=payload, timeout=2.0)
-            if response.status_code == 200:
-                _cached_active_port = port
-                logger.info(f"Successfully streamed matrix data to active IYE engine on port {port}")
-                success = True
-                break
-        except Exception:
-            continue
-
-    if not success:
+    response = _post_to_active_backend("/api/canvas/vectors", payload)
+    if response is not None:
+        logger.info(f"Successfully streamed matrix data to active IYE engine on port {_cached_active_port}")
+    else:
         logger.error(f"Failed to stream matrix data. IYE engine offline on ports {_CANDIDATE_PORTS}")
+
+
+def explain_anomaly(
+    point_index: int,
+    coordinates: Dict[str, float],
+    z_scores: Dict[str, float],
+    cluster_label: int,
+    axes_are_raw_features: bool = True,
+    timeout: float = 30.0,
+) -> Optional[str]:
+    """
+    Request an on-demand narrative explanation for a specific point from a
+    headless Python workflow — the SDK-side counterpart to a browser user
+    clicking an anomaly beacon (2026-07-29 sprint). Mirrors how encoding was
+    wired into both the browser and iye.show() the prior sprint: same
+    backend endpoint (POST /api/canvas/anomaly/explain), same port-scanning
+    connection logic as show().
+
+    Args:
+        point_index: index of the point within its frame (for display only).
+        coordinates: {"x": ..., "y": ..., "z": ...} — this point's 3D position.
+        z_scores: {"x": ..., "y": ..., "z": ...} — this point's per-axis
+            absolute Z-score magnitude (see iye.compute_z_scores).
+        cluster_label: this point's HDBSCAN cluster label (-1 = noise).
+        axes_are_raw_features: whether x/y/z are literal source features
+            (true for <=3-feature data or the small-n truncation fallback)
+            or an abstract UMAP embedding (false) — keeps the narrative
+            honest about what a deviating axis actually means.
+        timeout: request timeout in seconds. Defaults to 30s (not the 2s
+            show() uses for its fire-and-forget ingest) because Ollama
+            generation empirically takes ~15-22s and a script calling this
+            is, by definition, waiting on the answer.
+
+    Returns:
+        The explanation string, or None if the backend was unreachable or
+        returned a structured error (logged either way).
+    """
+    payload = {
+        "point_index": point_index,
+        "coordinates": coordinates,
+        "z_scores": z_scores,
+        "cluster_label": cluster_label,
+        "axes_are_raw_features": axes_are_raw_features,
+    }
+    response = _post_to_active_backend(
+        "/api/canvas/anomaly/explain", payload, timeout=timeout, accept_error_responses=True
+    )
+    if response is None:
+        logger.error(f"Failed to get anomaly explanation. IYE engine offline on ports {_CANDIDATE_PORTS}")
+        return None
+    if response.status_code != 200:
+        logger.error(f"Anomaly explanation request rejected: {response.text}")
+        return None
+    return response.json().get("explanation")
 
 
 __all__ = [
@@ -319,5 +416,7 @@ __all__ = [
     "reduce_to_3d",
     "cluster",
     "detect_anomalies",
+    "compute_z_scores",
+    "explain_anomaly",
     "MIN_SAMPLES_FOR_REDUCTION",
 ]

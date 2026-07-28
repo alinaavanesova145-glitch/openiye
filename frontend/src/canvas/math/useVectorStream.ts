@@ -73,6 +73,18 @@ export interface VectorFrame {
   explanation: string | null
   axis_mapping: Record<string, number> | null
   temporal: TemporalMetrics
+  /** One per-axis absolute Z-score triple per point, parallel to
+   *  `coordinates` (see backend's iye.compute_z_scores). Additive
+   *  (2026-07-29 sprint) — grounds severity-based visual encoding and the
+   *  per-point explain request. Empty until a real frame with the field
+   *  arrives (mock/legacy frames default to []). */
+  point_z_scores: VectorCoordinate3D[]
+  /** Additive (2026-07-29 sprint) — true when coordinates map directly to
+   *  original input dimensions (safe to describe as "a measured feature"
+   *  in a narrative); false when a real UMAP embedding was used (x/y/z are
+   *  abstract axes). Defaults true, matching the backend's default for the
+   *  common <=3-feature/passthrough case. */
+  axes_are_raw_features: boolean
 }
 
 export interface NarrativeHistoryEntry {
@@ -132,6 +144,26 @@ function parseTemporalMetrics(raw: unknown): TemporalMetrics {
     window_fill: num(t.window_fill, 0),
     dominant_dim: num(t.dominant_dim, -1),
   }
+}
+
+/** Parses the backend's point_z_scores (a JSON array of [x, y, z] triples,
+ *  parallel to `coordinates`) into VectorCoordinate3D objects. Tolerant of
+ *  a missing/malformed field (older backend, mock frame) — returns []
+ *  rather than throwing, matching this file's existing "drop malformed
+ *  messages safely" posture. */
+function parsePointZScores(raw: unknown): VectorCoordinate3D[] {
+  if (!Array.isArray(raw)) return []
+  const result: VectorCoordinate3D[] = []
+  for (const triple of raw) {
+    if (
+      Array.isArray(triple) &&
+      triple.length === 3 &&
+      triple.every((v): v is number => typeof v === 'number')
+    ) {
+      result.push({ x: triple[0], y: triple[1], z: triple[2] })
+    }
+  }
+  return result
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -433,6 +465,9 @@ export function useVectorStream(): VectorStreamResult {
                 explanation,
                 axis_mapping: null,
                 temporal,
+                point_z_scores: parsePointZScores(msg.point_z_scores),
+                axes_are_raw_features:
+                  typeof msg.axes_are_raw_features === 'boolean' ? msg.axes_are_raw_features : true,
               }
               liveFrameRef.current = frame
               setLiveFrame(frame)
@@ -483,6 +518,9 @@ export function useVectorStream(): VectorStreamResult {
               explanation: typeof obj.explanation === 'string' ? obj.explanation : null,
               axis_mapping: null,
               temporal: DEFAULT_TEMPORAL_METRICS,
+              point_z_scores: parsePointZScores(obj.point_z_scores),
+              axes_are_raw_features:
+                typeof obj.axes_are_raw_features === 'boolean' ? obj.axes_are_raw_features : true,
             }
             liveFrameRef.current = synthesizedFrame
             setLiveFrame(synthesizedFrame)

@@ -201,3 +201,90 @@ canvas {
   line-height: 1.5;
   color: rgba(255, 255, 255, 0.85);
 }
+
+.beacon-tooltip-hint {
+  margin: 6px 0 0 0;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: rgba(127, 216, 230, 0.7);
+}
+
+/* ── Per-point Narrative Panel (2026-07-29 sprint) ────────────────────────── */
+/* Distinct from .tactical-terminal-card's passive frame-level narrative: a
+   user actively clicked a specific beacon and is waiting on this answer. */
+
+.point-narrative-panel {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  width: 260px;
+  z-index: 10;
+  padding: 14px 16px;
+  background: rgba(0, 0, 0, 0.78);
+  border: 1px solid rgba(127, 216, 230, 0.3);
+  border-left: 2px solid #7fd8e6;
+  border-radius: 6px;
+  backdrop-filter: blur(6px);
+  font-family: 'Courier New', Courier, monospace;
+  animation: iye-terminal-in 0.25s ease-out;
+  transition:
+    border-color 0.3s ease,
+    box-shadow 0.3s ease;
+}
+
+.point-narrative-panel .status-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #7fd8e6;
+  text-shadow: 0 0 6px rgba(127, 216, 230, 0.6);
+  margin-bottom: 8px;
+}
+
+.point-narrative-panel .explanation-text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.point-narrative-dismiss {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0 0 8px;
+}
+
+.point-narrative-dismiss:hover {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.point-narrative-status {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: rgba(127, 216, 230, 0.8);
+  animation: iye-pulse 1.4s ease-in-out infinite;
+}
+
+.point-narrative-error {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #ff2b3d;
+}
+
+.point-narrative-panel--error {
+  border-left-color: #ff2b3d;
+}
+
+.point-narrative-panel--error .status-header {
+  color: #ff2b3d;
+  text-shadow: 0 0 6px rgba(255, 43, 61, 0.6);
+}

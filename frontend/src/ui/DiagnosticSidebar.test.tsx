@@ -27,6 +27,8 @@ function makeFrame(overrides: Partial<VectorFrame> = {}): VectorFrame {
       window_fill: 0.75,
       dominant_dim: -1,
     },
+    point_z_scores: [],
+    axes_are_raw_features: true,
     ...overrides,
   }
 }
