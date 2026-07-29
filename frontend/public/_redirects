@@ -1,0 +1,16 @@
+# Cloudflare Pages routing rule (2026-08-01, GTM readiness prep).
+#
+# The Vite build emits two separate static entries: dist/index.html (the
+# operational 3D canvas app — requires a LAN-local backend, never meant to
+# be what a public domain root serves) and dist/landing.html (the public
+# marketing page — see docs/gtm_deployment_brief.md).
+#
+# This is a 200 rewrite (serves landing.html's content, URL bar stays at
+# "/"), not a redirect — see https://developers.cloudflare.com/pages/configuration/redirects/
+# for the exact semantics. Placeholder/prep only: not yet deployed to any
+# real Cloudflare account. Verify this rule behaves as expected on the
+# first real deploy before relying on it — Cloudflare's _redirects parser
+# has had false-positive "infinite loop" detection issues on adjacent
+# rule shapes (cloudflare/workers-sdk#11824), and this exact rule has not
+# been tested against a live Pages deployment.
+/ /landing.html 200

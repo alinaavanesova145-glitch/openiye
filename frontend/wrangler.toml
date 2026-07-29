@@ -1,0 +1,21 @@
+# Cloudflare Pages configuration (2026-08-01, GTM readiness prep).
+#
+# PLACEHOLDER — no real Cloudflare account, project, or domain is wired to
+# this yet. See docs/gtm_deployment_brief.md for the full recommendation
+# and the "Waiting on CEO" checklist (account creation, domain connection,
+# and DNS changes all require direct CEO action and are not done here).
+#
+# This file complements, not replaces, the two dashboard fields set when
+# first connecting the GitHub repo in the Cloudflare Pages UI:
+#   Root directory:          frontend
+#   Build command:           npm run build
+#   Build output directory:  dist   (i.e. frontend/dist, relative to the
+#                                     root directory above)
+# Cloudflare Pages needs the "Root directory" field because this is a
+# monorepo (backend/, frontend/, sdk/, docs/) — the buildable Vite project
+# lives in frontend/, not the repo root.
+
+name = "iye-landing"  # placeholder project name — rename freely, has no
+                       # bearing on any real Cloudflare resource yet
+pages_build_output_dir = "./dist"
+compatibility_date = "2026-08-01"
