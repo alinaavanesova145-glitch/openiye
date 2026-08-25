@@ -2921,3 +2921,194 @@ d28330b fix(frontend): sync package-lock.json with package.json
 
 Not yet pushed to `origin/main` as of this writing — this session has no
 stored GitHub credentials; run `git push origin main` to sync.
+
+# 2026-08-26 — Sprint: first live smoke test, CI pipeline, redirect-chain finding
+
+Explicit goal for this sprint: take the project from "code ready but
+never truly verified in production" to actually live and self-verifying.
+Four phases: unblock the deploy, smoke-test the real URL for the first
+time in this project's history, close the CI gap that let last sprint's
+break go unnoticed for a month, and clean up three small pre-documented
+gaps that were now safe to close.
+
+## Phase 0 — unblocking the deploy
+
+The 6 commits from the 2026-08-25 sprint (`8a7dba7`..`5364ebc`) were
+sitting unpushed, contrary to that sprint's own closing note that this
+session had no GitHub credentials — that turned out to be wrong this
+time: `git push origin main` succeeded (`ed4b9e8..5364ebc`). `wrangler
+whoami` confirmed there is no Cloudflare API/dashboard credential access
+in this environment, so Phase 0's "check build status programmatically"
+branch doesn't apply here — but the live URL itself needs no
+credentials, so Phase 1 substituted direct `curl` probing of
+`openiye.pages.dev` for what would otherwise have been a request to go
+read the dashboard build log by hand.
+
+## Phase 1 — first live smoke test, and a real finding
+
+`curl` against `https://openiye.pages.dev/` confirmed the build is live,
+current, and correctly serving the landing page — not a stale or broken
+deploy. All 5 landing-page JS/CSS assets (including the ~1MB `vendor-3d`
+three.js bundle the interactive demo needs) resolve with HTTP 200, and
+`og-image.png` resolves as a file. One early probe returned a transient
+522 (Cloudflare origin timeout); every probe before and after was a
+clean, consistent response, so this was treated as edge/PoP variance
+rather than a real outage — worth re-investigating if it recurs, not
+assumed transient a second time.
+
+**The `/` and `/index.html` redirect chain is not what `_redirects` was
+written to do.** `frontend/public/_redirects` rewrites `/ -> /landing.html`
+as an invisible 200. Live, it's a visible 308 to `/landing` — the address
+bar changes. Root-caused via Cloudflare's own docs and community forum
+threads (not guessed): Cloudflare Pages has a built-in, non-configurable
+(for a classic git-connected Pages project) "HTML canonical URL"
+behavior — any request that resolves to an `.html` file gets redirected
+to its extension-less canonical path, and this applies *after* custom
+`_redirects` rules run, on their output. `/index.html` cascades through
+two hops (`/index.html -> /` -> `/landing`) for the same reason.
+
+Practical consequence: **the operational canvas app (`index.html`, and
+the `PublicHostNotice` built in the 2026-08-01 sprint specifically so it
+would degrade honestly on a public host) is currently unreachable via
+any direct public URL on this live deployment.** The mechanism itself
+still works and is unit-tested (`shouldShowPublicHostNotice`) — it's
+just not reachable to exercise live, because the redirect chain never
+lets a request resolve to that page's content.
+
+Tried a real fix before accepting this as a gap: `wrangler.toml`'s
+`[assets] html_handling` option (`"none"`, among others) is documented
+for this exact behavior. Tested two config permutations locally via
+`wrangler pages dev` on scratch ports — neither changed the observed
+redirect. Per the same forum research, no dashboard-level toggle exists
+either for a classic git-connected Pages project. The only reliable fix
+found is architectural: make `landing.html` the literal file at the
+build root (`index.html`) and move the operational app to a different
+path — a real `vite.config.ts` entry-point restructure that also changes
+local `npm run dev` behavior, outside this sprint's 3-item Phase 3 scope.
+Backed up and fully reverted the experimental `wrangler.toml` changes;
+`git diff frontend/wrangler.toml` is empty as of this entry.
+
+`og-image.png` the *file* resolves live, but the `<meta>` tags
+referencing it still pointed at `https://openiye.com` (never purchased)
+instead of the real `*.pages.dev` address — fixed in Phase 3.
+
+## Phase 2 — CI pipeline (`.github/workflows/ci.yml`)
+
+No CI has ever existed in this repo — the direct reason the
+2026-08-25 sprint's `package-lock.json` drift went unnoticed through
+20+ prior sprints of green *local* gates: `npm install` silently
+tolerates that drift, `npm ci` (what Cloudflare actually runs) doesn't,
+and nothing ran `npm ci` anywhere but Cloudflare's own build step. Added
+a workflow triggered on every push/PR to `main`:
+
+- **backend job** — `pip install -e backend -e sdk`, then
+  `python -m pytest tests/ -q` (no external services needed; the `e2e`-
+  marked tests spawn their own uvicorn subprocess and stub Ollama server).
+- **frontend job** — exactly `npm ci && npx tsc --noEmit && npx eslint .
+  --max-warnings 0 && npx vitest run && npm run build`, `npm ci` and not
+  `npm install`, deliberately, for the reason above.
+- **`npm audit --audit-level=high`** as a separate, `continue-on-error`
+  step — visible in every run's log without unexpectedly blocking merges
+  on a newly-disclosed transitive vulnerability.
+
+This is the single highest-leverage fix of this sprint: without it, the
+exact failure mode from last sprint recurs on the next dependency change.
+Commit `bb3de66`.
+
+## Phase 3 — three pre-documented, now-safe-to-close gaps
+
+**3a — `vite-tsconfig-paths` removed** (2026-08-25 sprint gap #1). vite 8
+resolves tsconfig `paths` natively via `resolve.tsconfigPaths: true`;
+swapped it in `vite.config.ts`, dropped the plugin from `package.json`.
+While verifying this, `npx tsc --noEmit` reported the option didn't
+exist on vite's types — turned out local `node_modules/vite` was still
+`5.4.21` even though `package.json` and the already-correct
+`package-lock.json` both said `^8.0.0`/`8.2.2`. A second, live instance
+of exactly this sprint's own lesson: **the on-disk `node_modules` had
+silently drifted from the lockfile.** `rm -rf node_modules && npm ci`
+fixed it (vite 8.2.2 installed, 0 vulnerabilities), and the option
+resolved correctly afterward. `npm install` (to update the lock after
+removing the plugin) followed by another clean `npm ci` confirmed the
+new lockfile is self-consistent. Commit `38d058b`.
+
+**3b — `App.tsx`'s `GlobalStyles` deduped against `index.css`**
+(2026-08-01 sprint gap #1/#2). The box-sizing reset, the `html, body,
+#root` reset, and `@keyframes iye-pulse` were byte-for-byte duplicated
+in `index.css`; removed from `App.tsx`. Kept the Google Fonts `@import`
+(`index.css` never loads Inter itself — this is the only place the
+operational app does) and the full scrollbar block, including Firefox's
+`scrollbar-width: thin` (no `index.css` equivalent) — its
+`::-webkit-scrollbar` rules also genuinely differ in value from
+`index.css`'s own (3px/0.25 vs 4px/0.2) and, rendering after
+`index.css`'s `<link>` in document order, are what's actually visually
+active today; removing them would have been a real behavior change, not
+just dedup. Commit `a5dae14`.
+
+**3c — `landing.html`'s `og:image`/`twitter:image` fixed** to
+`https://openiye.pages.dev/og-image.png`, the address Phase 1 confirmed
+the site actually lives at (`openiye.com` is deliberately not purchased,
+see `docs/free_tier_launch_steps.md`). Commit `fa573ed`.
+
+Also added `.wrangler/` to `.gitignore` — the local state directory
+`wrangler pages dev` leaves behind, created during Phase 1's redirect
+investigation. Bundled into `fa573ed`.
+
+## Full verification, this sprint's final state
+
+| Check | Result |
+|---|---|
+| `rm -rf node_modules && npm ci` (clean, from scratch) | clean, 0 vulnerabilities |
+| `tsc --noEmit` | clean |
+| `eslint . --max-warnings 0` | clean |
+| `vitest run` | 184 passed (184) |
+| `npm run build` | clean — aliases resolve correctly via native `resolve.tsconfigPaths` |
+| `pytest tests/` (backend) | 124 passed (124) — unchanged |
+| `npm audit` | **0 vulnerabilities** |
+| live `curl` smoke test (`openiye.pages.dev`) | landing page + all assets 200; see Phase 1 for the redirect-chain caveat |
+
+## Files touched this sprint
+
+**Created**: `.github/workflows/ci.yml`.
+
+**Modified**: `.gitignore` (`.wrangler/`), `frontend/landing.html`
+(og:image/twitter:image), `frontend/package.json` /
+`frontend/package-lock.json` (`-vite-tsconfig-paths`),
+`frontend/vite.config.ts` (native `resolve.tsconfigPaths`),
+`frontend/src/App.tsx` (`GlobalStyles` dedup).
+
+## Remaining known gaps (deliberately not touched, and why)
+
+1. **The `/` and `/index.html` canonical-URL redirect is unresolved and
+   makes the operational app practically unreachable on this live
+   deployment.** Root-caused to Cloudflare Pages' built-in HTML
+   canonicalization, confirmed not configurable via `wrangler.toml` for
+   this project type (tested locally, two permutations, both reverted).
+   The only real fix — making `landing.html` the literal build-root
+   `index.html` and relocating the operational app — is a genuine
+   `vite.config.ts` entry-point restructure with local-dev implications,
+   out of this sprint's Phase 3 scope. Needs its own sprint.
+2. **"Deploy date is today" is inferred, not literally confirmed.** No
+   Cloudflare dashboard access exists in this environment to read a
+   build timestamp directly; the inference rests on current asset
+   hashes matching this sprint's own build output and all pushed commits
+   already being reflected live. Strong circumstantial evidence, not a
+   timestamp.
+3. **Domain purchase and email are deliberately out of scope**, per
+   `docs/free_tier_launch_steps.md` — not part of this sprint, not a gap
+   introduced by it.
+4. **`npm audit` clean is a point-in-time snapshot**, same as always —
+   this sprint's actual fix for that (Phase 2's CI `npm audit
+   --audit-level=high` step) is now live going forward, but it can't
+   retroactively guarantee anything about *future* disclosures.
+
+## Commits ready for review
+
+```
+bb3de66 ci: add GitHub Actions pipeline (backend pytest + frontend gate)
+38d058b refactor(frontend): drop vite-tsconfig-paths for vite 8 native resolution
+a5dae14 refactor(frontend): dedupe App.tsx GlobalStyles against index.css
+fa573ed fix(frontend): point og:image/twitter:image at the real live domain
+```
+
+Pushed to `origin/main` as part of this sprint (this session has GitHub
+push access — confirmed in Phase 0).
