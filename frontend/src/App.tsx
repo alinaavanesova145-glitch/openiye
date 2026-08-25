@@ -180,23 +180,20 @@ const ViewportPanel: React.FC<{ streamState: StreamState }> = ({ streamState }) 
   </div>
 )
 
-// ─── Global Keyframes (injected once) ─────────────────────────────────────────
+// ─── Global Styles (injected once) ────────────────────────────────────────────
+// 2026-08-26: trimmed to only what index.css genuinely lacks — the
+// box-sizing reset, html/body/#root reset, and @keyframes iye-pulse were
+// byte-for-byte duplicated there (see docs/idealization_report.md,
+// 2026-08-01 sprint, gap #1/#2). The @import stays: index.css never loads
+// the Inter font itself, and this is the only place the operational app
+// (index.html) does. The scrollbar block also stays as-is — it renders
+// after index.css's <link> in document order, so for the shared
+// ::-webkit-scrollbar selectors it's what actually wins today, and
+// scrollbar-width (Firefox) has no equivalent in index.css at all.
 
 const GlobalStyles: React.FC = () => (
   <style>{`
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
-
-    *, *::before, *::after { box-sizing: border-box; }
-
-    html, body, #root {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      height: 100%;
-      background: var(--iye-bg);
-      font-family: 'Inter', system-ui, -apple-system, sans-serif;
-      -webkit-font-smoothing: antialiased;
-    }
 
     /* Hairline blush scrollbar — never a default gray OS scrollbar on the
        black field. Chosen over fully-hidden because the sidebar has no
@@ -207,11 +204,6 @@ const GlobalStyles: React.FC = () => (
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: rgba(255,182,193,0.25); border-radius: 3px; }
     ::-webkit-scrollbar-button { display: none; height: 0; width: 0; }
-
-    @keyframes iye-pulse {
-      0%, 100% { opacity: 1; box-shadow: 0 0 8px #ffb6c1; }
-      50%       { opacity: 0.4; box-shadow: 0 0 3px #ffb6c1; }
-    }
   `}</style>
 )
 
