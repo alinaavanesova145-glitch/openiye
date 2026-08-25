@@ -2760,3 +2760,164 @@ aliasing, CTA/demo-widget polish).
 ```
 
 Ready to push to `origin/main` along with all prior commits.
+
+# 2026-08-25 — Sprint: first real Cloudflare Pages deploy + npm audit remediation
+
+Frontend-only, as scoped — `backend/` and `sdk/` untouched, confirmed via
+`git status` before every commit this sprint.
+
+## Phase 0 — og:image asset (closes a 2026-07-30 sprint gap)
+
+`frontend/landing.html` had explicitly shipped without an `og:image` —
+that sprint's report flagged it as "needing real infrastructure before
+launch" rather than shipping something broken. Rendered a real 1200×630
+preview asset (`frontend/public/og-image.png`) directly from
+`frontend/src/lib/theme.ts`'s palette (`#0a0a0d` bg, `#ffb6c1` pink,
+`#5fd9e8` cyan, `#ff2b3d` anomaly red) via a headless-browser screenshot,
+so it's pixel-true to the actual site rather than a hand-guessed
+approximation. Wired into `og:image`/`twitter:image` — flagged inline in
+the HTML that the URL assumes the eventual `openiye.com` custom domain
+and needs a one-line update if the first real deploy is to a free
+`*.pages.dev` subdomain instead.
+
+## Phase 1 — First real Cloudflare Pages deploy attempt surfaced a month-old break
+
+The Cloudflare Pages project (`openiye`, connected to this repo, assigned
+`openiye.pages.dev`) already existed — Root Directory was already
+correctly set to `frontend`, contrary to this doc's own prior assumption
+that it was the missing piece. Every deployment attempt on record (four,
+spanning `bd74fe4` a month ago through `ed4b9e8` today) had instead
+failed at `npm ci` with:
+
+```
+npm error `npm ci` can only install packages when your package.json and
+package-lock.json ... are in sync.
+npm error Missing: @types/react@19.2.18 from lock file
+```
+
+`frontend/package-lock.json` was out of sync with `package.json`. Every
+prior sprint's local verification used `npm install` (or an
+already-populated `node_modules`), which tolerates and silently patches
+this kind of drift — `npm ci`, the strict command Cloudflare Pages
+actually runs for reproducible builds, does not. This is why it was
+invisible through 20+ prior sprints of green local test/build gates and
+only surfaced once a real deploy was attempted.
+
+Reproduced the exact failure in a clean container (fresh checkout,
+`npm ci` → identical `EUSAGE` error) before touching anything, then
+regenerated the lock with `npm install` and re-verified the full chain
+from scratch: `npm ci`, `tsc --noEmit`, `eslint --max-warnings 0`,
+`vitest run` (184/184), `npm run build` (produces
+`dist/{index,landing}.html` + `_redirects` + `og-image.png`). 11-line
+diff, additive only — no dependency ranges in `package.json` changed.
+Commit `d28330b`.
+
+## Phase 2 — npm audit: 14 findings, root-caused rather than blindly forced
+
+`npm audit` on the now-installable lock: 14 vulnerabilities (3 moderate,
+10 high, 1 critical).
+
+**2a — the 9 non-critical, non-forced ones weren't actually fixable by
+`npm audit fix` despite it claiming so.** `brace-expansion`, `js-yaml`,
+`nanoid`, `postcss`, `shell-quote` resolved cleanly; `image-size` (and
+its `metro`/`metro-config`/`metro-transform-worker` dependents, 4 more
+high-severity findings) kept reporting "fix available" and never
+actually resolved on rerun. Traced the chain instead of retrying the
+same command: `image-size` arrives via
+`react-spring → @react-spring/native → react-native → @react-native/community-cli-plugin → metro`.
+`react-spring` (the umbrella package, declared `^9.7.3`) unconditionally
+depends on every renderer target — core/konva/**native**/three/web/zdog,
+none optional — so `@react-spring/native` drags in react-native's entire
+CLI toolchain purely as install weight. `grep -rn "react-spring" src/`
+returns zero matches — nothing in this codebase imports it. Removed the
+dependency outright (654 → 479 packages) rather than chasing a version
+bump nothing in the graph could satisfy. This incidentally exposed a
+second, real latent bug: `theme.consistency.test.ts` and
+`noHardcodedBackendUrls.test.ts` (2026-08-01 sprint) use
+`node:fs`/`node:path`/`__dirname` but never declared `@types/node` — the
+types were silently satisfied by the now-removed react-native
+toolchain's own transitive `@types/node`. Added it explicitly
+(`^22.20.1`, matching the Node 22 this project already runs on). Commit
+`6f33ff4`.
+
+**2b — the remaining 5 (esbuild/vite/vite-node/@vitest/mocker, 1
+critical: vitest) all trace to vite ≤6.4.2's bundled esbuild.**
+`npm audit fix --force` alone bumps vite to 8.2.2 but leaves
+`@vitejs/plugin-react` pinned at `^4.2.1`, whose peer range caps at vite
+`^7` — that combination *installs* under `--force` (with an ERESOLVE
+warning) but **`npm ci` refuses it outright**, which would have
+reintroduced the exact class of bug Phase 1 just fixed. Checked whether
+a real fix existed rather than either forcing it through or giving up:
+`@vitejs/plugin-react@6.1.0` is the first release with `peerDependencies:
+vite ^8.0.0`. Bumped all three together (`vite ^8.0.0`, `vitest ^4.0.0`,
+`@vitejs/plugin-react ^6.1.0`) — installs with zero ERESOLVE warnings,
+`npm audit` reports 0 vulnerabilities.
+
+Given the size of this jump (three major versions on the actual bundler),
+verified beyond the usual gate: clean `npm ci`, `tsc --noEmit`, `eslint`,
+`vitest run` (184/184, unchanged), `npm run build` (output structurally
+identical; `vendor-3d` chunk actually shrank 993KB → 977KB, likely
+improved tree-shaking under vite 8's Rolldown-oriented pipeline), **and**
+a scratch-port `vite` dev-server smoke test (HTTP 200, React Fast
+Refresh injected) — the previous checks all prove the *production build*
+still works, this one proves local `npm run dev` wasn't silently broken
+by a bundler-generation jump. Commit `74a376e`.
+
+## Full verification, this sprint's final state
+
+| Check | Result |
+|---|---|
+| `pytest tests/` (backend) | 124 passed — unchanged, frontend-only sprint |
+| `npm ci` (clean, from scratch) | clean |
+| `tsc --noEmit` | clean |
+| `eslint . --max-warnings 0` | clean |
+| `vitest run` | 184 passed (184) — unchanged |
+| `npm run build` | clean — `dist/{index,landing}.html`, `_redirects`, `og-image.png` all present |
+| `vite` dev server | starts clean, HTTP 200, Fast Refresh active |
+| `npm audit` | **0 vulnerabilities** (was 14: 3 moderate, 10 high, 1 critical) |
+
+## Files touched this sprint
+
+**Created**: `frontend/public/og-image.png`.
+
+**Modified**: `frontend/landing.html` (og:image/twitter:image),
+`frontend/package.json` (`-react-spring`, `+@types/node`, `vite`/
+`vitest`/`@vitejs/plugin-react` major bumps), `frontend/package-lock.json`,
+`docs/free_tier_launch_steps.md` (new — Cloudflare Pages free-tier
+launch checklist, companion to `docs/gtm_deployment_brief.md`).
+
+## Remaining known gaps (deliberately not touched, and why)
+
+1. **`vite-tsconfig-paths` is now redundant** — vite 8 supports tsconfig
+   path resolution natively (`resolve.tsconfigPaths: true`). Both
+   `vitest` and `vite build` print an informational (non-blocking)
+   notice about this. Left the plugin in place rather than also editing
+   `vite.config.ts` inside the same commit as a three-major-version
+   bundler jump — swapping it is a safe, independent follow-up with no
+   functional difference either way.
+2. **The `_redirects` rewrite has still never been tested against a
+   live production URL with real traffic** — Phase 1 of this sprint
+   confirmed the *build* produces it correctly and Cloudflare's own
+   build log now completes, but no one has yet loaded `openiye.pages.dev`
+   in a browser post-fix to confirm the live routing behaves as
+   expected. Worth a manual check after the next deploy.
+3. **`npm audit` found 0 vulnerabilities, but that's a point-in-time
+   snapshot** — no CI gate runs `npm audit` on a schedule or on PRs, so
+   the next transitive vulnerability disclosure will sit undetected the
+   same way this sprint's 14 did, until someone thinks to run it by
+   hand. Adding an audit check to CI is a real gap, not built here
+   (no CI pipeline exists yet at all for this repo — GitHub Actions
+   was out of scope for a dependency-remediation sprint).
+
+## Commits ready for review
+
+```
+8a7dba7 fix(frontend): add og:image asset for landing page link previews
+6671a6b docs: free-tier launch steps (Cloudflare Pages, $0, no domain purchase)
+d28330b fix(frontend): sync package-lock.json with package.json
+6f33ff4 fix(frontend): drop unused react-spring, fixes 9 of 14 npm audit findings
+74a376e fix(frontend): bump vite 5->8, vitest 2->4 -- closes remaining 5 npm audit findings (1 critical)
+```
+
+Not yet pushed to `origin/main` as of this writing — this session has no
+stored GitHub credentials; run `git push origin main` to sync.
