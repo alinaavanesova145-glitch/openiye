@@ -1,0 +1,61 @@
+name: CI
+
+# No CI existed anywhere in this repo before 2026-08-26 — that's the root
+# cause a month-long Cloudflare Pages break (package-lock.json drifted
+# from package.json; `npm install` silently tolerates that, `npm ci` does
+# not) went undetected through 20+ prior sprints of green *local* gates.
+# `npm ci`, not `npm install`, is deliberate here for exactly that reason
+# — see docs/idealization_report.md, 2026-08-25 and 2026-08-26 sprints.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install backend + sdk (editable, matches local ./venv setup)
+        run: pip install -e backend -e sdk
+
+      - name: pytest
+        run: cd backend && python -m pytest tests/ -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # npm ci, not npm install — npm ci is the strict, reproducible-build
+      # command Cloudflare Pages itself runs, and the only one that fails
+      # loudly on a package.json/package-lock.json drift instead of
+      # silently patching it.
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0
+      - run: npx vitest run
+      - run: npm run build
+
+      # Non-blocking for now (continue-on-error) so a newly-disclosed
+      # transitive vulnerability doesn't block merges unexpectedly, but the
+      # result is visible in every PR/push log — the actual gap this
+      # closes is "nobody looks unless they remember to run this by hand"
+      # (see docs/idealization_report.md, 2026-08-25 sprint, gap #3).
+      - name: npm audit (informational — see comment above)
+        run: npm audit --audit-level=high
+        continue-on-error: true
