@@ -3,13 +3,15 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import tsconfigPaths from 'vite-tsconfig-paths'
 
 // ESM has no __dirname — package.json declares "type": "module".
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
-  plugins: [react(), tsconfigPaths()],
+  // vite-tsconfig-paths dropped 2026-08-26 — vite 8 resolves tsconfig
+  // `paths` natively via this option, no plugin needed.
+  resolve: { tsconfigPaths: true },
+  plugins: [react()],
   test: {
     environment: 'jsdom',
     globals: true,
