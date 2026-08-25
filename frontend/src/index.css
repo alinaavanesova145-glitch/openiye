@@ -1,3 +1,29 @@
+/* ── IYE Design Tokens (2026-08-01 sprint) ────────────────────────────────── */
+/* Canonical source of truth for the shared base palette — background and
+   primary pink, plus the accents used across App.tsx, VectorViewport.tsx,
+   and the diagnostic UI. Previously each of those hand-rolled its own copy
+   of the same values (and landing.css had a fifth, independently-declared
+   set) with no signal if one drifted from the rest. JS/TSX contexts read
+   the same literal values from frontend/src/lib/theme.ts (react-three-fiber
+   material props can't resolve CSS custom properties) —
+   theme.consistency.test.ts asserts the two stay in sync. Component-
+   specific one-off styling below (tooltip/terminal-card opacities, the
+   magenta terminal accent, etc.) is deliberately left as literal values:
+   those are individual design choices, not the duplicated-base-token
+   problem this block solves. */
+
+:root {
+  --iye-bg: #0a0a0d;
+  --iye-bg-raised: #111116;
+  --iye-pink: #ffb6c1;
+  --iye-pink-dim: rgba(255, 182, 193, 0.12);
+  --iye-pink-border: rgba(255, 182, 193, 0.22);
+  --iye-cyan: #5fd9e8;
+  --iye-text: rgba(255, 255, 255, 0.9);
+  --iye-text-muted: rgba(255, 255, 255, 0.56);
+  --iye-text-faint: rgba(255, 255, 255, 0.36);
+}
+
 /* ── IYE Global Reset ─────────────────────────────────────────────────────── */
 
 *,
@@ -10,12 +36,12 @@
 
 html {
   height: 100%;
-  background: #000000;
+  background: var(--iye-bg);
 }
 
 body {
   height: 100%;
-  background: #000000;
+  background: var(--iye-bg);
   color: rgba(255, 255, 255, 0.88);
   font-family:
     'Inter',
@@ -34,7 +60,7 @@ body {
 #root {
   width: 100%;
   height: 100%;
-  background: #000000;
+  background: var(--iye-bg);
 }
 
 /* ── Scrollbar ───────────────────────────────────────────────────────────── */

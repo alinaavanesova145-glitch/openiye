@@ -19,17 +19,22 @@ import {
   formatPartialMessage,
   type DataSourceState,
 } from '@canvas/upload/dataSourceState'
+import { THEME, pinkAlpha, whiteAlpha } from '@lib/theme'
 
 // ─── Design Tokens ────────────────────────────────────────────────────────────
+// 2026-08-01: base pink sourced from @lib/theme instead of a fourth
+// independent hardcoded copy. The three pink-text opacity tiers
+// (50/60/70%) are this panel's own hierarchy choice, preserved exactly —
+// unifying the base color doesn't mean forcing every opacity to one value.
 
 const COLORS = {
-  pink: '#ffb6c1',
-  pinkDim: 'rgba(255, 182, 193, 0.12)',
-  pinkBorder: 'rgba(255, 182, 193, 0.2)',
-  pinkText60: 'rgba(255, 182, 193, 0.6)',
-  pinkText50: 'rgba(255, 182, 193, 0.5)',
-  pinkText70: 'rgba(255, 182, 193, 0.7)',
-  textMuted: 'rgba(255, 255, 255, 0.38)',
+  pink: THEME.pink,
+  pinkDim: THEME.pinkDim,
+  pinkBorder: THEME.pinkBorder,
+  pinkText60: pinkAlpha(0.6),
+  pinkText50: pinkAlpha(0.5),
+  pinkText70: pinkAlpha(0.7),
+  textMuted: whiteAlpha(0.38),
 } as const
 
 // ─── Props ────────────────────────────────────────────────────────────────────

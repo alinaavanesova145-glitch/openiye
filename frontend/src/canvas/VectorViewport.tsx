@@ -8,14 +8,24 @@ import { useVectorStream, DEFAULT_TEMPORAL_METRICS, HOT_REGIMES } from './math/u
 import type { FeatureAttribution, TemporalMetrics, VectorCoordinate3D } from './math/useVectorStream'
 import { useAnomalyExplain } from './math/useAnomalyExplain'
 import type { AnomalyExplainState, ExplainablePoint } from './math/useAnomalyExplain'
+import { THEME } from '@lib/theme'
 
 // ─── Design Tokens ────────────────────────────────────────────────────────────
+// 2026-08-01: sourced from @lib/theme (shared with App.tsx, DiagnosticSidebar,
+// DataSourcePanel) instead of a fourth independent hardcoded copy. pink/cyan
+// are the shared marketing/UI-chrome base tokens; anomaly/tracer are
+// data-viz-specific accents — semantically distinct (not reused as general
+// UI chrome elsewhere) but still centralized in theme.ts rather than
+// re-hardcoded here. Kept as plain hex strings, not CSS var() references:
+// react-three-fiber's material `color` prop is parsed by Three.js directly,
+// which never touches the DOM's CSS cascade and cannot resolve
+// `var(--iye-pink)` the way a browser-rendered style prop could.
 
 const COLORS = {
-  pink: '#ffb6c1',
-  cyan: '#5fd9e8',
-  anomaly: '#ff2b3d',
-  tracer: '#7fd8e6',
+  pink: THEME.pink,
+  cyan: THEME.cyan,
+  anomaly: THEME.anomaly,
+  tracer: THEME.tracer,
 } as const
 
 const BOUNDS_HALF_EXTENT = 2 // matches ViewportWireframe's boxGeometry args [4, 4, 4]

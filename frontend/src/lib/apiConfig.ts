@@ -57,3 +57,34 @@ export const API_BASE: string = deriveApiBase()
 
 /** e.g. `ws://192.168.1.4:8050` (or `wss://` when the page is https). */
 export const WS_BASE: string = deriveWsBase(API_BASE)
+
+// ─── Public-deployment detection (2026-08-01 sprint) ───────────────────────────
+// The backend is LAN-bound by design — its own CORS policy
+// (backend/app/api/main.py's DEV_CORS_ORIGIN_REGEX) only ever allows
+// localhost/127.0.0.1 and the RFC 1918 private ranges. This mirrors that
+// exact same boundary on the frontend side, purely to decide whether to
+// show an honest "this needs a local network connection" notice instead
+// of a silently-stuck-disconnected canvas — see App.tsx's ViewportPanel.
+// It does NOT gate any request; API_BASE/WS_BASE above are unaffected and
+// still just derive from window.location either way. There is no
+// production backend for a public host to fall back to.
+
+const PRIVATE_HOSTNAME_PATTERN =
+  /^(localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2}|192\.168(?:\.\d{1,3}){2})$/
+
+/** Pure — same "prove the core, document the env boundary" split as
+ *  computeApiBase/computeWsBase above. */
+export function isLikelyPublicHost(hostname: string): boolean {
+  return !PRIVATE_HOSTNAME_PATTERN.test(hostname)
+}
+
+function deriveIsPublicHost(): boolean {
+  if (typeof window === 'undefined') return false
+  return isLikelyPublicHost(window.location.hostname)
+}
+
+/** True when the page itself was loaded from somewhere outside the
+ *  private/local network the backend's own CORS policy would ever accept
+ *  a request from (e.g. `openiye.pages.dev`) — meaning no backend can
+ *  possibly be reachable here, by design, not as a bug. */
+export const IS_PUBLIC_HOST: boolean = deriveIsPublicHost()

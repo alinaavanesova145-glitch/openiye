@@ -13,22 +13,27 @@
 import React, { useMemo } from 'react'
 import type { StreamState, VectorFrame } from '@canvas/math/useVectorStream'
 import type { LlmStatus } from '@canvas/math/useVectorDiagnostics'
+import { THEME, pinkAlpha, whiteAlpha } from '@lib/theme'
 
 // ─── Design Tokens ────────────────────────────────────────────────────────────
+// 2026-08-01: base pink/background sourced from @lib/theme instead of a
+// third independent hardcoded copy. `magenta`/`offline` stay local — they're
+// this sidebar's own status-specific accents (anomaly / socket-offline),
+// not part of the shared base palette reused elsewhere.
 
 const COLORS = {
-  black: '#000000',
-  pink: '#ffb6c1',
+  bg: THEME.bg,
+  pink: THEME.pink,
   magenta: '#ff00ff',
   offline: '#ff0055',
-  pinkDim: 'rgba(255, 182, 193, 0.12)',
-  pinkBorder: 'rgba(255, 182, 193, 0.2)',
-  pinkText: 'rgba(255, 182, 193, 0.6)',
-  white10: 'rgba(255, 255, 255, 0.06)',
-  white20: 'rgba(255, 255, 255, 0.12)',
-  textPrimary: 'rgba(255, 255, 255, 0.88)',
-  textMuted: 'rgba(255, 255, 255, 0.38)',
-  divider: 'rgba(255, 182, 193, 0.08)',
+  pinkDim: THEME.pinkDim,
+  pinkBorder: THEME.pinkBorder,
+  pinkText: pinkAlpha(0.6),
+  white10: whiteAlpha(0.06),
+  white20: whiteAlpha(0.12),
+  textPrimary: whiteAlpha(0.88),
+  textMuted: whiteAlpha(0.38),
+  divider: pinkAlpha(0.08),
 } as const
 
 const MONO_FONT = "'Courier New', Courier, monospace"
@@ -247,7 +252,7 @@ const FrameMetadata: React.FC<{ frame: VectorFrame }> = ({ frame }) => {
           fontSize: 9,
           letterSpacing: '0.14em',
           fontWeight: 600,
-          color: COLORS.black,
+          color: COLORS.bg,
           background: statusColor,
           marginBottom: 12,
           fontFamily: MONO_FONT,
@@ -325,7 +330,7 @@ export const DiagnosticSidebar: React.FC<DiagnosticSidebarProps> = ({
         width: '100%',
         flex: 1,
         minHeight: 0, // lets this flex child actually shrink to enable overflow-y:auto
-        background: COLORS.black,
+        background: COLORS.bg,
         display: 'flex',
         flexDirection: 'column',
         padding: '32px 24px',

@@ -9,18 +9,25 @@
  * all comfortably clear of the 4.5:1 AA-normal-text threshold, so no
  * separate "lightened for text" variant was needed; the existing saturated
  * tones are safe for body copy as-is.
+ *
+ * UPDATED 2026-08-01: these tokens are now aliases onto the shared
+ * `--iye-*` custom properties declared in frontend/src/index.css (loaded
+ * by both this page and the main app) rather than a second independent
+ * declaration of the same values — the values above were correct and are
+ * unchanged, only their source of truth moved. Every `var(--landing-*)`
+ * reference later in this file is untouched.
  */
 
 :root {
-  --landing-bg: #0a0a0d;
-  --landing-bg-raised: #111116;
-  --landing-pink: #ffb6c1;
-  --landing-pink-dim: rgba(255, 182, 193, 0.12);
-  --landing-pink-border: rgba(255, 182, 193, 0.22);
-  --landing-cyan: #5fd9e8;
-  --landing-text: rgba(255, 255, 255, 0.9);
-  --landing-text-muted: rgba(255, 255, 255, 0.56);
-  --landing-text-faint: rgba(255, 255, 255, 0.36);
+  --landing-bg: var(--iye-bg);
+  --landing-bg-raised: var(--iye-bg-raised);
+  --landing-pink: var(--iye-pink);
+  --landing-pink-dim: var(--iye-pink-dim);
+  --landing-pink-border: var(--iye-pink-border);
+  --landing-cyan: var(--iye-cyan);
+  --landing-text: var(--iye-text);
+  --landing-text-muted: var(--iye-text-muted);
+  --landing-text-faint: var(--iye-text-faint);
 }
 
 .landing-root {
@@ -112,6 +119,9 @@
 .landing-cta--primary {
   background: var(--landing-pink);
   color: #14080b;
+  /* Reads as prominent at rest, not only on hover — the primary CTA
+     shouldn't need a cursor over it to catch the eye. */
+  box-shadow: 0 0 18px rgba(255, 182, 193, 0.2);
 }
 
 .landing-cta--primary:hover {
@@ -172,6 +182,11 @@
   border-radius: 10px;
   background: var(--landing-bg-raised);
   overflow: hidden;
+  /* The demo is the hero, not a supporting screenshot (see
+     docs/idealization_report.md, 2026-07-30 sprint, Phase 4.1) — a subtle
+     ambient glow marks it as the page's visual anchor without competing
+     with the CTA above it. */
+  box-shadow: 0 0 60px rgba(255, 182, 193, 0.06);
 }
 
 .demo-widget-label {
