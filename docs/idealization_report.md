@@ -2603,3 +2603,160 @@ reconciliation), plus the test files listed above.
 ```
 
 Ready to push to `origin/main` along with all prior commits.
+
+# 2026-08-01 — Sprint: Cloudflare Pages delivery hardening + unified design tokens
+
+Frontend-only, as scoped — `backend/` and `sdk/` untouched, confirmed via
+`git status` before committing.
+
+## Phase 1 — Cloudflare Pages routing audit
+
+`frontend/public/_redirects`' `/ /landing.html 200` rule was re-verified
+still correct and still the only rule needed: no trailing-slash gap, no
+unmatched-path gap worth a catch-all (this app has no client-side routes
+to preserve on refresh, so a blanket SPA-fallback rule would be wrong
+here, not just unnecessary — it would silently mask real 404s).
+
+The real gap was `index.html` on the public deployment: it previously
+showed a silently-stuck "STREAM: disconnected" canvas forever, since
+there's no backend to reach from `openiye.pages.dev`. Added
+`isLikelyPublicHost`/`IS_PUBLIC_HOST` to `apiConfig.ts` (mirrors the
+backend's own `DEV_CORS_ORIGIN_REGEX` private-range boundary exactly —
+same semantic question, "would the backend's own CORS even accept a
+request from here") and a `PublicHostNotice` component in `App.tsx`,
+shown only when `IS_PUBLIC_HOST && streamState !== 'connected'`. Explains
+the situation honestly ("this view connects to the IYE engine running on
+your local network... nothing is broken") and links to the live demo —
+never attempts to actually reach a backend, never claims the connection
+will recover. The gating condition was extracted into a pure
+`shouldShowPublicHostNotice` function specifically so it's testable
+without mounting `VectorViewport`'s `<Canvas>` (the same jsdom/R3F wall
+`VectorViewport.memo.test.tsx` and `App.suspense.test.tsx` already
+document).
+
+## Phase 2 — Hardcoded API URL audit
+
+Grepped the entire `frontend/src` tree for `127.0.0.1`, `localhost:8050`,
+`ws://`/`wss://`/`http://` literals outside `apiConfig.ts` — found zero.
+Every `fetch()` call (`useVectorDiagnostics.ts`, `useAnomalyExplain.ts`)
+and the one `new WebSocket()` call (`useVectorStream.ts`) already route
+through `API_BASE`/`WS_BASE`; `import.meta.env` is read nowhere else. No
+fix was needed — per the task's explicit guardrail, this stayed an audit,
+not an opportunity to wire the app to a hosted backend or loosen CORS.
+
+Added `noHardcodedBackendUrls.test.ts`, an architecture-fitness test that
+scans every non-test source file at test-run time and fails on a
+forbidden URL pattern outside `apiConfig.ts`. Verified it actually catches
+a violation (injected a fake `http://127.0.0.1:8050` literal into
+`App.tsx`, confirmed the test failed with the right file named, reverted)
+before trusting it as a real regression guard.
+
+## Phase 3 — Unified design system
+
+The audit found more duplication than the task's own framing assumed:
+not three hardcoded palettes but **four** — `App.tsx`, `VectorViewport.tsx`,
+`DiagnosticSidebar.tsx`, and `DataSourcePanel.tsx` each independently
+hand-rolled the same `#ffb6c1` pink (and `App.tsx`'s own injected
+`<style>` block had a *fifth*, separate `#000000` competing with all of
+them) — plus `landing.css`'s own already-correct `:root` block.
+
+New `frontend/src/lib/theme.ts` is the single JS/TSX source. It has to be
+a plain TS module, not CSS custom properties, because react-three-fiber's
+material `color` prop is parsed by Three.js directly and never touches
+the DOM's CSS cascade — `VectorViewport.tsx`'s beacon/hull/tracer colors
+genuinely cannot resolve `var(--iye-pink)`, they need a real hex string.
+`index.css`'s `:root` now holds the same literal values for CSS contexts;
+`landing.css`'s own `--landing-*` tokens were changed to alias the shared
+`--iye-*` ones (`--landing-bg: var(--iye-bg)`, etc.) rather than
+re-declaring the same values a second time — every existing
+`var(--landing-*)` reference elsewhere in that file's ~200 lines is
+untouched, zero risk to the already-tested landing page internals.
+
+**What converged vs. what stayed local** (a deliberate line, not
+everything got forced together): `bg`, `pink`, `cyan`, `pinkDim`,
+`pinkBorder` were genuinely identical (or near-identical, see below)
+across 3+ files — promoted to named `THEME` constants, enforced by a new
+`theme.consistency.test.ts` that parses `index.css`'s `:root` block and
+asserts every shared token matches `theme.ts`'s export (verified against
+a real injected mismatch before trusting it, same discipline as Phase 2's
+guard). `anomaly`/`tracer` (data-viz accents) and each file's own bespoke
+text-opacity tiers (`DataSourcePanel`'s 50/60/70%, `DiagnosticSidebar`'s
+`magenta`/`offline` status colors, `landing.css`'s own text/textMuted/
+textFaint hierarchy) were deliberately left as local, independent choices
+— those weren't duplicated values silently drifting, they were different
+surfaces making different legibility/hierarchy decisions for different
+contexts, and forcing them to one number would have been a real (and
+unrequested) visual redesign risk, not a consistency fix. `pinkBorder`
+was standardized to `0.22` everywhere (was `0.2` in `App.tsx`/
+`DiagnosticSidebar.tsx`, `0.22` in `landing.css`) — imperceptible
+visually, closes the gap properly instead of leaving 3-of-4 agreeing.
+
+Background: every pure `#000000` competing value (`App.tsx`'s `COLORS.black`,
+its separately-injected `<style>` block's `html/body/#root` rule,
+`index.css`'s own global reset) now reads `#0a0a0d`, the same
+WCAG-verified pitch-black-with-depth the landing page already used (see
+2026-07-30 sprint's contrast table — `#ffb6c1` on `#0a0a0d` is 11.97:1).
+Five unused dead color tokens (`App.tsx`'s `pinkDim`/`pinkText`/`white10`/
+`white20`/`textMuted` — declared, never referenced anywhere) were dropped
+rather than migrated, found while rewriting the exact object holding them.
+
+Landing page polish (Phase 3.4): two small, CSS-only, low-risk additions
+using the now-unified tokens — the primary CTA now has a subtle glow at
+rest, not only on hover, and the demo widget (the actual hero, per the
+2026-07-30 sprint's framing) gets a faint ambient glow marking it as the
+page's visual anchor. No copy changed; the forbidden-social-proof
+regression test (`LandingApp.test.tsx`) was re-run and still passes
+unmodified.
+
+## Full verification
+
+| Check | Result |
+|---|---|
+| `pytest tests/` (backend) | 124 passed — **unchanged**, confirmed frontend-only sprint |
+| `vitest run` (frontend) | 184 passed (148 → 184: 36 new across 4 new files) |
+| `tsc --noEmit` (frontend) | clean |
+| `eslint . --max-warnings 0` (frontend) | clean |
+| `vite build` (frontend) | clean — `dist/index.html`, `dist/landing.html`, `dist/_redirects` all present; `theme.ts` correctly split into its own shared chunk by Rollup (deduplicated across the app and landing bundles) |
+
+No existing test assertions were modified — every change was additive
+(new tokens/tests) or a value migration internal to implementation detail
+no existing test asserted on directly.
+
+## Files touched this sprint
+
+**Created**: `frontend/src/lib/theme.ts` (+`theme.consistency.test.ts`),
+`frontend/src/App.test.tsx`, `frontend/src/noHardcodedBackendUrls.test.ts`.
+
+**Modified**: `frontend/src/lib/apiConfig.ts` (+test — `isLikelyPublicHost`/
+`IS_PUBLIC_HOST`), `frontend/src/App.tsx` (`PublicHostNotice`,
+`shouldShowPublicHostNotice`, theme migration), `frontend/src/canvas/
+VectorViewport.tsx`, `frontend/src/ui/{DiagnosticSidebar,DataSourcePanel}.tsx`
+(theme migration), `frontend/src/index.css` (`:root` token block,
+background migration), `frontend/src/landing/landing.css` (token
+aliasing, CTA/demo-widget polish).
+
+## Remaining known gaps (deliberately not touched, and why)
+
+1. **`App.tsx`'s injected `<style>` block still duplicates `index.css`'s
+   `@keyframes iye-pulse` byte-for-byte** — found during the audit,
+   deliberately not removed: it's a pure CSS redundancy (not a color-token
+   duplication, this sprint's actual scope), functionally harmless since
+   both definitions are identical, and touching more CSS than the color
+   audit called for risked scope creep for zero behavioral gain.
+2. **`App.tsx`'s `<style>` block's `html, body, #root` margin/padding/
+   width/height rules are largely redundant with `index.css`'s own global
+   reset** — same reasoning as above; only the one actual "competing
+   value" (`#000000`) was fixed, the broader redundancy wasn't touched.
+3. **The `_redirects` rewrite has still never been tested against a live
+   Cloudflare Pages deployment** — no account exists to test it against
+   (see the 2026-08-01 GTM deployment brief); the file's own comment
+   flags this and cites the specific Cloudflare parser issue worth
+   checking on first real deploy.
+
+## Commits ready for review
+
+```
+9b14591 fix(frontend): Cloudflare Pages routing hardening + unified design tokens
+```
+
+Ready to push to `origin/main` along with all prior commits.
