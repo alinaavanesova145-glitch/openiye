@@ -33,3 +33,6 @@ __pycache__/
 .env.development.local
 .env.test.local
 .env.production.local
+
+# Cloudflare Wrangler local dev state (created by `wrangler pages dev`)
+.wrangler/
