@@ -130,6 +130,17 @@ function buildMockFrame() {
   return { positions, anomalyIndices: [12, 47, 88], clusterLabels }
 }
 
+// ─── Cluster color (shared by InstancedCoreNodes and ClusterHulls) ────────────
+// Derived from the cluster's own stable label — not iteration/insertion order
+// — so the same logical cluster never flips color between frames with no
+// underlying data change. Noise (label < 0) never counts as cyan; JS's `%`
+// on a negative label already can't equal 1, but the explicit check makes
+// that intentional rather than incidental.
+
+export function isClusterCyan(label: number): boolean {
+  return label >= 0 && label % 2 === 1
+}
+
 // ─── Instanced Core Geometry (nominal nodes) ─────────────────────────────────
 
 interface CoreNodesProps {
@@ -161,7 +172,7 @@ const InstancedCoreNodes = memo(function InstancedCoreNodes({
       mesh.setMatrixAt(i, dummy.matrix)
 
       const cluster = clusterLabels[idx] ?? -1
-      mesh.setColorAt(i, cluster >= 0 && cluster % 2 === 1 ? cyan : pink)
+      mesh.setColorAt(i, isClusterCyan(cluster) ? cyan : pink)
     })
 
     mesh.count = nominalIndices.length
@@ -208,7 +219,6 @@ const ClusterHulls = memo(function ClusterHulls({ positions, clusterLabels }: Hu
     }
 
     const entries: HullEntry[] = []
-    let toggle = 0
     groups.forEach((pts, label) => {
       if (pts.length < 4) return // need >=4 non-coplanar points for a hull
       try {
@@ -218,7 +228,16 @@ const ClusterHulls = memo(function ClusterHulls({ positions, clusterLabels }: Hu
           key: label,
           geometry,
           edges,
-          color: toggle++ % 2 === 0 ? COLORS.pink : COLORS.cyan,
+          // isClusterCyan (2026-08-28 sprint) — matches InstancedCoreNodes's
+          // point color exactly, derived from the cluster's own stable
+          // label. The old `toggle++` approach assigned color by which
+          // clusters happened to have >=4 points and a non-degenerate hull
+          // *in this frame*, in Map-iteration order: the same logical
+          // cluster could flip pink<->cyan between frames with zero
+          // underlying data change, whenever iteration order shifted (e.g.
+          // a point count crossing the >=4 threshold for a different
+          // cluster first).
+          color: isClusterCyan(label) ? COLORS.cyan : COLORS.pink,
         })
       } catch {
         // Degenerate (coplanar) cluster point set — skip hull rendering

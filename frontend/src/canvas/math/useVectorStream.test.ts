@@ -63,7 +63,12 @@ function makeFrameMessage(
     coordinates?: { x: number; y: number; z: number }[]
     cluster_labels?: number[]
     anomaly_indices?: number[]
-    point_z_scores?: { x: number; y: number; z: number }[]
+    // Wire format: an [x, y, z] number-triple per point (matches the
+    // backend's iye.compute_z_scores(...).tolist() — a nested list, not
+    // {x,y,z} objects). This field's type was previously declared wrong
+    // here (2026-08-28 sprint) — never caught because no prior test in
+    // this file actually populated it with real data.
+    point_z_scores?: [number, number, number][]
     axes_are_raw_features?: boolean
     point_feature_attributions?: { name: string; z_score: number }[][]
   } = {},
@@ -274,6 +279,99 @@ describe('useVectorStream — referential stability (React.memo prerequisite)', 
     expect(result.current.anomalyIndices).not.toBe(anomalyIndicesAfterFirst)
     expect(result.current.liveFrame?.cluster_labels).not.toBe(clusterLabelsAfterFirst)
     expect(result.current.positions.length).toBe(9) // 3 points * 3
+  })
+
+  // point_z_scores/point_feature_attributions (2026-08-28 sprint) — added in
+  // a later sprint than the three fields above and never extended into this
+  // same reuse-identity-when-unchanged pattern, so every message rebuilt
+  // them fresh regardless of whether the values changed. That defeated
+  // VectorViewport's tooltipInfo memo (keyed on the whole liveFrame object)
+  // and re-rendered every AnomalyBeacon on every nominal message.
+
+  it('reuses the same point_z_scores/point_feature_attributions identity across two value-identical frames', () => {
+    const { result } = renderHook(() => useVectorStream())
+    const ws = MockWebSocket.instances[0]
+    act(() => ws.triggerOpen())
+
+    const zScores: [number, number, number][] = [
+      [0.1, 0.2, 0.3],
+      [1, 1, 1],
+    ]
+    const attributions = [[{ name: 'temp', z_score: 2.9 }], []]
+
+    act(() => {
+      ws.triggerMessage(
+        makeFrameMessage({
+          id: 'f1',
+          coordinates: coords,
+          point_z_scores: zScores,
+          point_feature_attributions: attributions,
+        }),
+      )
+    })
+    const zScoresAfterFirst = result.current.liveFrame?.point_z_scores
+    const attributionsAfterFirst = result.current.liveFrame?.point_feature_attributions
+
+    act(() => {
+      // Same z-scores/attributions *values*, different id — a legitimate
+      // "repeat" frame, new object literals so this genuinely exercises
+      // value equality, not accidental reference reuse from the test itself.
+      ws.triggerMessage(
+        makeFrameMessage({
+          id: 'f2',
+          coordinates: coords,
+          point_z_scores: [
+            [0.1, 0.2, 0.3],
+            [1, 1, 1],
+          ],
+          point_feature_attributions: [[{ name: 'temp', z_score: 2.9 }], []],
+        }),
+      )
+    })
+
+    expect(result.current.liveFrame?.id).toBe('f2')
+    expect(result.current.liveFrame?.point_z_scores).toBe(zScoresAfterFirst)
+    expect(result.current.liveFrame?.point_feature_attributions).toBe(attributionsAfterFirst)
+  })
+
+  it('produces a new point_z_scores/point_feature_attributions identity when the values actually change', () => {
+    const { result } = renderHook(() => useVectorStream())
+    const ws = MockWebSocket.instances[0]
+    act(() => ws.triggerOpen())
+
+    act(() => {
+      ws.triggerMessage(
+        makeFrameMessage({
+          id: 'f1',
+          coordinates: coords,
+          point_z_scores: [
+            [0.1, 0.2, 0.3],
+            [1, 1, 1],
+          ],
+          point_feature_attributions: [[{ name: 'temp', z_score: 2.9 }], []],
+        }),
+      )
+    })
+    const zScoresAfterFirst = result.current.liveFrame?.point_z_scores
+    const attributionsAfterFirst = result.current.liveFrame?.point_feature_attributions
+
+    act(() => {
+      ws.triggerMessage(
+        makeFrameMessage({
+          id: 'f2',
+          coordinates: coords,
+          point_z_scores: [
+            [9.9, 0.2, 0.3], // changed
+            [1, 1, 1],
+          ],
+          point_feature_attributions: [[{ name: 'pressure', z_score: 4.1 }], []], // changed
+        }),
+      )
+    })
+
+    expect(result.current.liveFrame?.point_z_scores).not.toBe(zScoresAfterFirst)
+    expect(result.current.liveFrame?.point_feature_attributions).not.toBe(attributionsAfterFirst)
+    expect(result.current.liveFrame?.point_z_scores[0].x).toBe(9.9)
   })
 })
 

@@ -328,6 +328,35 @@ function numberArrayEqual(a: ArrayLike<number> | null, b: ArrayLike<number>): bo
   return true
 }
 
+// point_z_scores/point_feature_attributions (2026-08-28 sprint) — added in
+// later sprints than the fields above and never extended into this same
+// reuse-identity-when-unchanged pattern, so every message rebuilt them
+// fresh regardless of whether the values changed. That cascaded into
+// VectorViewport's tooltipInfo memo (keyed on the whole liveFrame object)
+// recomputing, and every AnomalyBeacon re-rendering, on every nominal
+// message with no real change.
+
+function pointZScoresEqual(a: VectorCoordinate3D[], b: VectorCoordinate3D[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].x !== b[i].x || a[i].y !== b[i].y || a[i].z !== b[i].z) return false
+  }
+  return true
+}
+
+function featureAttributionsEqual(a: FeatureAttribution[][], b: FeatureAttribution[][]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const rowA = a[i]
+    const rowB = b[i]
+    if (rowA.length !== rowB.length) return false
+    for (let j = 0; j < rowA.length; j++) {
+      if (rowA[j].name !== rowB[j].name || rowA[j].z_score !== rowB[j].z_score) return false
+    }
+  }
+  return true
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 const NARRATIVE_HISTORY_LIMIT = 20
@@ -361,6 +390,8 @@ export function useVectorStream(): VectorStreamResult {
   const lastPositionsRef = useRef<Float32Array>(new Float32Array(0))
   const lastClusterLabelsRef = useRef<number[]>([])
   const lastAnomalyIndicesRef = useRef<number[]>([])
+  const lastPointZScoresRef = useRef<VectorCoordinate3D[]>([])
+  const lastPointFeatureAttributionsRef = useRef<FeatureAttribution[][]>([])
 
   // ── Connection logic ────────────────────────────────────────────────────
 
@@ -490,6 +521,30 @@ export function useVectorStream(): VectorStreamResult {
               const temporal = parseTemporalMetrics(msg.temporal)
               const explanation = typeof msg.explanation === 'string' ? msg.explanation : null
 
+              const rawPointZScores = parsePointZScores(msg.point_z_scores)
+              const pointZScoresChanged = !pointZScoresEqual(
+                lastPointZScoresRef.current,
+                rawPointZScores,
+              )
+              const pointZScores = pointZScoresChanged
+                ? rawPointZScores
+                : lastPointZScoresRef.current
+              if (pointZScoresChanged) lastPointZScoresRef.current = pointZScores
+
+              const rawPointFeatureAttributions = parsePointFeatureAttributions(
+                msg.point_feature_attributions,
+              )
+              const pointFeatureAttributionsChanged = !featureAttributionsEqual(
+                lastPointFeatureAttributionsRef.current,
+                rawPointFeatureAttributions,
+              )
+              const pointFeatureAttributions = pointFeatureAttributionsChanged
+                ? rawPointFeatureAttributions
+                : lastPointFeatureAttributionsRef.current
+              if (pointFeatureAttributionsChanged) {
+                lastPointFeatureAttributionsRef.current = pointFeatureAttributions
+              }
+
               // Mutate directly — no setState — so beacon pulse reads the latest
               // temporal signal every animation frame without re-rendering the canvas.
               temporalRef.current = temporal
@@ -507,10 +562,10 @@ export function useVectorStream(): VectorStreamResult {
                 explanation,
                 axis_mapping: null,
                 temporal,
-                point_z_scores: parsePointZScores(msg.point_z_scores),
+                point_z_scores: pointZScores,
                 axes_are_raw_features:
                   typeof msg.axes_are_raw_features === 'boolean' ? msg.axes_are_raw_features : true,
-                point_feature_attributions: parsePointFeatureAttributions(msg.point_feature_attributions),
+                point_feature_attributions: pointFeatureAttributions,
               }
               liveFrameRef.current = frame
               setLiveFrame(frame)
