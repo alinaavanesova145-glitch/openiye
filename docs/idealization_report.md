@@ -3015,6 +3015,29 @@ This is the single highest-leverage fix of this sprint: without it, the
 exact failure mode from last sprint recurs on the next dependency change.
 Commit `bb3de66`.
 
+**The pipeline's first-ever run (triggered by pushing `bb3de66`) failed**
+— confirmed via GitHub's public REST API (no dashboard/token access in
+this environment, but Actions run status for a public repo is readable
+unauthenticated): `frontend` job green, `backend` job failed at the
+`pytest` step. Root-caused rather than guessed, per this sprint's own
+stated discipline — reproduced in a fresh `python3.9` venv (matching the
+job's `setup-python` version) running the exact install command from
+`ci.yml`. `backend/pyproject.toml` never declared `pytest` as a
+dependency anywhere — not in `dependencies`, not in the `dev` extra —
+only its `[tool.pytest.ini_options]` config existed. It only ever worked
+locally because some earlier session's `.venv` had `pytest` installed
+outside of anything the project itself declares, invisible to a truly
+fresh install. The `dev` extra (`websockets`, needed by three `e2e`-
+marked test files) also wasn't being installed by `ci.yml`'s original
+`pip install -e backend -e sdk` at all. Fixed both: added
+`pytest>=8.0.0` to the `dev` extra, changed `ci.yml` to
+`pip install -e "backend[dev]" -e sdk`. Re-reproduced in a second fresh
+venv: 124 passed. Regenerated `egg-info/` metadata (tracked in this
+repo) as a byproduct — it was already stale, missing several real
+dependencies. Commit `23df000`. Pushed; polled the resulting run
+(`32997629253`) via the same public API until it completed: **both jobs
+green.**
+
 ## Phase 3 — three pre-documented, now-safe-to-close gaps
 
 **3a — `vite-tsconfig-paths` removed** (2026-08-25 sprint gap #1). vite 8
@@ -3065,6 +3088,7 @@ investigation. Bundled into `fa573ed`.
 | `pytest tests/` (backend) | 124 passed (124) — unchanged |
 | `npm audit` | **0 vulnerabilities** |
 | live `curl` smoke test (`openiye.pages.dev`) | landing page + all assets 200; see Phase 1 for the redirect-chain caveat |
+| `.github/workflows/ci.yml` actual run on `origin/main` | run `32997629253` (commit `23df000`) — **both jobs green**, confirmed via GitHub's public Actions API |
 
 ## Files touched this sprint
 
@@ -3074,7 +3098,10 @@ investigation. Bundled into `fa573ed`.
 (og:image/twitter:image), `frontend/package.json` /
 `frontend/package-lock.json` (`-vite-tsconfig-paths`),
 `frontend/vite.config.ts` (native `resolve.tsconfigPaths`),
-`frontend/src/App.tsx` (`GlobalStyles` dedup).
+`frontend/src/App.tsx` (`GlobalStyles` dedup), `backend/pyproject.toml`
+(`+pytest` in the `dev` extra — CI found a real, previously-invisible
+gap), `backend/iye_backend.egg-info/*` + `sdk/iye_sdk.egg-info/*`
+(regenerated, were already stale before this sprint).
 
 ## Remaining known gaps (deliberately not touched, and why)
 
@@ -3100,6 +3127,14 @@ investigation. Bundled into `fa573ed`.
    this sprint's actual fix for that (Phase 2's CI `npm audit
    --audit-level=high` step) is now live going forward, but it can't
    retroactively guarantee anything about *future* disclosures.
+5. **Backend dependencies still have no lockfile** — `pyproject.toml`
+   uses `>=`-only ranges throughout, no pinned/frozen requirements file.
+   This sprint's CI failure (pytest undeclared) was found and fixed, but
+   the underlying reproducibility gap it's a symptom of — a fresh
+   install can silently resolve different transitive versions than
+   whatever's in any given local `.venv` — is the same class of problem
+   `package-lock.json` solves for the frontend, and nothing analogous
+   exists here yet. Out of scope for this sprint; worth its own pass.
 
 ## Commits ready for review
 
@@ -3108,7 +3143,12 @@ bb3de66 ci: add GitHub Actions pipeline (backend pytest + frontend gate)
 38d058b refactor(frontend): drop vite-tsconfig-paths for vite 8 native resolution
 a5dae14 refactor(frontend): dedupe App.tsx GlobalStyles against index.css
 fa573ed fix(frontend): point og:image/twitter:image at the real live domain
+9890a30 docs: live smoke test + CI pipeline + redirect-chain finding sprint report
+23df000 fix(ci): first CI run failed -- pytest was never a declared dependency
 ```
 
-Pushed to `origin/main` as part of this sprint (this session has GitHub
-push access — confirmed in Phase 0).
+All pushed to `origin/main` (this session has GitHub push access —
+confirmed in Phase 0). This entry itself is being amended in a follow-up
+commit after `23df000`, once the resulting CI run was confirmed green —
+the version of this section committed as part of `9890a30` predated that
+confirmation and should be read as superseded by this one.
