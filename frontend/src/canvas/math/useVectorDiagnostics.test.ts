@@ -35,6 +35,69 @@ class StubWebSocket {
   }
 }
 
+// ─── Fuller WebSocket mock — for the activeFrame live-vs-rest tests below,
+// which need to actually trigger open/message events, unlike every other
+// test in this file (mirrors useVectorStream.test.ts's own MockWebSocket).
+
+class MockWebSocket {
+  static instances: MockWebSocket[] = []
+  url: string
+  readyState = 0
+  onopen: (() => void) | null = null
+  onmessage: ((event: { data: string }) => void) | null = null
+  onerror: (() => void) | null = null
+  onclose: (() => void) | null = null
+
+  constructor(url: string) {
+    this.url = url
+    MockWebSocket.instances.push(this)
+  }
+
+  close() {
+    this.readyState = 3
+    this.onclose?.()
+  }
+
+  triggerOpen() {
+    this.readyState = 1
+    this.onopen?.()
+  }
+
+  triggerMessage(data: unknown) {
+    this.onmessage?.({ data: typeof data === 'string' ? data : JSON.stringify(data) })
+  }
+
+  triggerClose() {
+    this.readyState = 3
+    this.onclose?.()
+  }
+}
+
+function makeLiveFrameMessage(id: string, x: number) {
+  return {
+    type: 'frame',
+    id,
+    status: 'NOMINAL',
+    timestamp: new Date().toISOString(),
+    coordinates: [{ x, y: 0, z: 0 }],
+    cluster_labels: [0],
+    anomaly_indices: [],
+    explanation: null,
+    temporal: {
+      z_max: 0,
+      z_per_dim: [],
+      velocity: 0,
+      acceleration: 0,
+      drift_slope: 0,
+      composite: 0,
+      composite_smoothed: 0,
+      regime: 'stable',
+      window_fill: 1,
+      dominant_dim: -1,
+    },
+  }
+}
+
 beforeEach(() => {
   StubWebSocket.instances = []
   vi.stubGlobal('WebSocket', StubWebSocket)
@@ -350,5 +413,89 @@ describe('useVectorDiagnostics — concurrent upload race safety', () => {
     })
     expect(result.current.dataSourceState.status).toBe('loaded')
     vi.useRealTimers()
+  })
+})
+
+// ─── activeFrame: live-vs-rest resolution, end to end ───────────────────────
+// This is exactly the gap Phase 1's bug (App.tsx rendering <VectorViewport
+// /> with zero props) lived in, untested: useVectorDiagnostics already
+// computed the right answer for which frame should be "active," but nothing
+// ever asserted it end-to-end against a REAL combination of live WS traffic
+// and REST uploads. activePositions is checked alongside activeFrame since
+// that's the field VectorViewport actually renders from (see
+// App.upload-wiring.test.tsx for the prop-wiring layer above this hook).
+
+describe('useVectorDiagnostics — activeFrame live-vs-rest resolution', () => {
+  it('neither live nor rest data yet: activeFrame is null, isLive is false, activePositions is empty', () => {
+    vi.stubGlobal('WebSocket', MockWebSocket)
+    const { result } = renderHook(() => useVectorDiagnostics())
+
+    expect(result.current.activeFrame).toBeNull()
+    expect(result.current.isLive).toBe(false)
+    expect(result.current.activePositions.length).toBe(0)
+  })
+
+  it('a REST upload with no live stream ever connected: activeFrame reflects it, isLive stays false', async () => {
+    vi.stubGlobal('WebSocket', MockWebSocket)
+    mockFetchRoutedBy(() =>
+      Promise.resolve(new Response(JSON.stringify(VALID_FRAME_RESPONSE), { status: 200 })),
+    )
+    const { result } = renderHook(() => useVectorDiagnostics())
+
+    await act(async () => {
+      await result.current.ingestFile(makeNumericCsvFile())
+    })
+
+    expect(result.current.activeFrame?.frame_id).toBe(VALID_FRAME_RESPONSE.frame_id)
+    expect(result.current.isLive).toBe(false)
+    expect(result.current.activePositions.length).toBeGreaterThan(0)
+  })
+
+  it('a connected live frame takes priority over an existing REST upload', async () => {
+    vi.stubGlobal('WebSocket', MockWebSocket)
+    mockFetchRoutedBy(() =>
+      Promise.resolve(new Response(JSON.stringify(VALID_FRAME_RESPONSE), { status: 200 })),
+    )
+    const { result } = renderHook(() => useVectorDiagnostics())
+
+    // A REST upload lands first.
+    await act(async () => {
+      await result.current.ingestFile(makeNumericCsvFile())
+    })
+    expect(result.current.activeFrame?.frame_id).toBe(VALID_FRAME_RESPONSE.frame_id)
+
+    // Then a live WS frame arrives on a connected stream.
+    const ws = MockWebSocket.instances[MockWebSocket.instances.length - 1]
+    act(() => ws.triggerOpen())
+    act(() => ws.triggerMessage(makeLiveFrameMessage('live-1', 42)))
+
+    expect(result.current.isLive).toBe(true)
+    expect(result.current.activeFrame?.frame_id).toBe('live-1')
+    // activePositions follows the live frame now, not the REST upload's.
+    expect(Array.from(result.current.activePositions)).toEqual([42, 0, 0])
+  })
+
+  it('when the live stream disconnects, activeFrame falls back to the REST upload again', async () => {
+    vi.stubGlobal('WebSocket', MockWebSocket)
+    mockFetchRoutedBy(() =>
+      Promise.resolve(new Response(JSON.stringify(VALID_FRAME_RESPONSE), { status: 200 })),
+    )
+    const { result } = renderHook(() => useVectorDiagnostics())
+
+    await act(async () => {
+      await result.current.ingestFile(makeNumericCsvFile())
+    })
+
+    const ws = MockWebSocket.instances[MockWebSocket.instances.length - 1]
+    act(() => ws.triggerOpen())
+    act(() => ws.triggerMessage(makeLiveFrameMessage('live-1', 42)))
+    expect(result.current.isLive).toBe(true)
+
+    act(() => ws.triggerClose())
+
+    expect(result.current.isLive).toBe(false)
+    // Falls back to the REST frame — a stale liveFrame is never shown once
+    // the stream that produced it is gone.
+    expect(result.current.activeFrame?.frame_id).toBe(VALID_FRAME_RESPONSE.frame_id)
   })
 })
