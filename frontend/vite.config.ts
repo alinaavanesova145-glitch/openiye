@@ -26,13 +26,19 @@ export default defineConfig({
     // already chose to split out rather than shrink further.
     chunkSizeWarningLimit: 1100,
     rollupOptions: {
-      // Additive multi-page entry (2026-07-30 sprint) — the existing app
-      // (index.html -> src/main.tsx) is completely untouched; landing.html
-      // is a second, independent entry for the public marketing page.
-      // Without this, a production build would only emit index.html.
+      // Multi-page entry, restructured 2026-08-27 — index.html is now the
+      // marketing landing page (source: src/landing/main.tsx) and app.html
+      // is the operational 3D canvas app (source: src/main.tsx). Previously
+      // the app was index.html and the landing page was a second entry
+      // (landing.html); that made Cloudflare Pages' built-in HTML
+      // canonicalization redirect the public root away from the landing
+      // page (see docs/idealization_report.md, 2026-08-26 sprint) — since
+      // the literal filename at the build root now matches what the root
+      // URL is supposed to serve, there's nothing left for Cloudflare to
+      // canonicalize away from.
       input: {
-        main: resolve(__dirname, 'index.html'),
-        landing: resolve(__dirname, 'landing.html'),
+        landing: resolve(__dirname, 'index.html'),
+        app: resolve(__dirname, 'app.html'),
       },
       output: {
         // three/@react-three/* are the vast majority of the bundle and are

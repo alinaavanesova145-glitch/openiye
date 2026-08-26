@@ -72,7 +72,10 @@ cd frontend && npm run dev
 Requires `backend/.venv` already set up (`pip install -e backend -e sdk` or
 equivalent) and `frontend/node_modules` installed (`npm install`).
 
-Run `./boot.sh`, open `http://localhost:3000`, then drag
+Run `./boot.sh`, open `http://localhost:3000/app.html` (the operational
+canvas app — `http://localhost:3000` itself serves the public marketing
+landing page, `frontend/index.html`; see `frontend/vite.config.ts`'s
+multi-page build config), then drag
 [`demo/sample_telemetry.csv`](demo/sample_telemetry.csv) (200 rows, 4 planted
 outliers — regenerate via `python3 tools/make_demo_fixture.py`) onto the DATA
 SOURCE panel to see the full upload-to-insight pipeline in one drop.

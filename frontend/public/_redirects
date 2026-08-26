@@ -1,16 +1,19 @@
-# Cloudflare Pages routing rule (2026-08-01, GTM readiness prep).
+# Cloudflare Pages routing rule.
 #
-# The Vite build emits two separate static entries: dist/index.html (the
-# operational 3D canvas app — requires a LAN-local backend, never meant to
-# be what a public domain root serves) and dist/landing.html (the public
-# marketing page — see docs/gtm_deployment_brief.md).
+# Restructured 2026-08-27 (see docs/idealization_report.md, 2026-08-26 and
+# 2026-08-27 sprints). The Vite build now emits dist/index.html (the public
+# marketing landing page, physically at the build root) and dist/app.html
+# (the operational 3D canvas app — requires a LAN-local backend, never
+# meant to be what a public domain root serves).
 #
-# This is a 200 rewrite (serves landing.html's content, URL bar stays at
-# "/"), not a redirect — see https://developers.cloudflare.com/pages/configuration/redirects/
-# for the exact semantics. Placeholder/prep only: not yet deployed to any
-# real Cloudflare account. Verify this rule behaves as expected on the
-# first real deploy before relying on it — Cloudflare's _redirects parser
-# has had false-positive "infinite loop" detection issues on adjacent
-# rule shapes (cloudflare/workers-sdk#11824), and this exact rule has not
-# been tested against a live Pages deployment.
-/ /landing.html 200
+# Root ("/") needs no rule here: it's served directly from the literal
+# index.html Cloudflare Pages always treats as the implicit root document
+# — no redirect involved. This one rule gives the operational app a clean
+# extension-less URL (/app) matching how Cloudflare's own HTML-file
+# canonicalization already wants to present it, rather than fighting that
+# behavior the way the old `/ -> /landing.html` rewrite did (that rewrite's
+# 200 response was itself re-canonicalized into a visible 308 to /landing
+# — root-caused in the 2026-08-26 sprint entry; this restructure is that
+# fix). Confirmed live post-deploy: see the 2026-08-27 sprint entry for the
+# actual curl-verified redirect/status-code results.
+/app /app.html 200

@@ -127,7 +127,7 @@ export const PublicHostNotice: React.FC = () => (
         is broken; there&rsquo;s just no backend to find from here.
       </p>
       <a
-        href="/landing.html"
+        href="/"
         style={{
           fontSize: 11,
           letterSpacing: '0.04em',
@@ -184,9 +184,10 @@ const ViewportPanel: React.FC<{ streamState: StreamState }> = ({ streamState }) 
 // 2026-08-26: trimmed to only what index.css genuinely lacks — the
 // box-sizing reset, html/body/#root reset, and @keyframes iye-pulse were
 // byte-for-byte duplicated there (see docs/idealization_report.md,
-// 2026-08-01 sprint, gap #1/#2). The @import stays: index.css never loads
-// the Inter font itself, and this is the only place the operational app
-// (index.html) does. The scrollbar block also stays as-is — it renders
+// 2026-08-01 sprint, gap #1/#2). The @import stays: index.css (the
+// stylesheet) never loads the Inter font itself, and this is the only
+// place the operational app (app.html, renamed from index.html in the
+// 2026-08-27 sprint) does. The scrollbar block also stays as-is — it renders
 // after index.css's <link> in document order, so for the shared
 // ::-webkit-scrollbar selectors it's what actually wins today, and
 // scrollbar-width (Firefox) has no equivalent in index.css at all.

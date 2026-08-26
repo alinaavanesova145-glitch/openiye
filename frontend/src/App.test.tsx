@@ -27,7 +27,7 @@ describe('PublicHostNotice', () => {
     expect(screen.getByText('local network required')).toBeInTheDocument()
     expect(screen.getByText(/can.t reach one from the public internet, by design/)).toBeInTheDocument()
     const link = screen.getByText('see the live interactive demo instead')
-    expect(link.closest('a')).toHaveAttribute('href', '/landing.html')
+    expect(link.closest('a')).toHaveAttribute('href', '/')
   })
 
   it('never claims the connection is broken or will fix itself', () => {

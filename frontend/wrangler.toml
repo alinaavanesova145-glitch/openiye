@@ -1,12 +1,11 @@
-# Cloudflare Pages configuration (2026-08-01, GTM readiness prep).
+# Cloudflare Pages configuration.
 #
-# PLACEHOLDER — no real Cloudflare account, project, or domain is wired to
-# this yet. See docs/gtm_deployment_brief.md for the full recommendation
-# and the "Waiting on CEO" checklist (account creation, domain connection,
-# and DNS changes all require direct CEO action and are not done here).
-#
-# This file complements, not replaces, the two dashboard fields set when
-# first connecting the GitHub repo in the Cloudflare Pages UI:
+# Live since 2026-08-25 — real Cloudflare account, project `openiye`,
+# deployed at https://openiye.pages.dev (custom domain not yet purchased,
+# see docs/free_tier_launch_steps.md). The GitHub repo is connected for
+# git-triggered builds; the dashboard's own Root directory / Build command
+# / Build output directory fields (set once, in the UI, not via this file)
+# are what Cloudflare actually builds from:
 #   Root directory:          frontend
 #   Build command:           npm run build
 #   Build output directory:  dist   (i.e. frontend/dist, relative to the
@@ -14,8 +13,12 @@
 # Cloudflare Pages needs the "Root directory" field because this is a
 # monorepo (backend/, frontend/, sdk/, docs/) — the buildable Vite project
 # lives in frontend/, not the repo root.
+#
+# `wrangler pages dev` (local Pages emulation) does read this file, and was
+# used during the 2026-08-26 sprint's redirect-chain investigation — see
+# docs/idealization_report.md for what was and wasn't controllable from
+# here (`[assets] html_handling` is not honored for this project type).
 
-name = "iye-landing"  # placeholder project name — rename freely, has no
-                       # bearing on any real Cloudflare resource yet
+name = "openiye"  # matches the real, already-created Cloudflare project
 pages_build_output_dir = "./dist"
 compatibility_date = "2026-08-01"
