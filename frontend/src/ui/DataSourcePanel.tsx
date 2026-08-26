@@ -49,6 +49,10 @@ export interface DataSourcePanelProps {
   onDismissOffer?: () => void
   /** Re-attempts a `network_error`'d ingest without re-selecting the file. */
   onRetry?: () => void
+  /** Aborts an in-flight ingest — the drop zone's only way out of `parsing`
+   *  besides waiting for the request to settle or time out (2026-08-28
+   *  sprint; see useVectorDiagnostics.ts's cancelIngest). */
+  onCancel?: () => void
 }
 
 /** Shared styling for the panel's inline action buttons (offer's two,
@@ -88,7 +92,8 @@ const StatusRegion: React.FC<{
   onConfirmOffer?: () => void
   onDismissOffer?: () => void
   onRetry?: () => void
-}> = ({ state, onConfirmOffer, onDismissOffer, onRetry }) => {
+  onCancel?: () => void
+}> = ({ state, onConfirmOffer, onDismissOffer, onRetry, onCancel }) => {
   switch (state.status) {
     case 'idle':
       return (
@@ -113,8 +118,13 @@ const StatusRegion: React.FC<{
       return (
         <div>
           <Filename name={state.filename} />
-          <div style={{ fontSize: 9, color: COLORS.pinkText60, letterSpacing: '0.08em' }}>
+          <div style={{ fontSize: 9, color: COLORS.pinkText60, letterSpacing: '0.08em', marginBottom: 12 }}>
             parsing…{typeof state.progress === 'number' ? ` ${String(Math.round(state.progress * 100))}%` : ''}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'center' }}>
+            <PanelButton onClick={() => onCancel?.()} variant="muted">
+              cancel
+            </PanelButton>
           </div>
         </div>
       )
@@ -251,14 +261,26 @@ export const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
   onConfirmOffer,
   onDismissOffer,
   onRetry,
+  onCancel,
 }) => {
   const [isDragging, setIsDragging] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    setIsDragging(true)
-  }, [])
+  // A request is already in flight — the zone doesn't accept a new drop
+  // while busy (2026-08-28 sprint). This is a UX gate, not the actual
+  // correctness guarantee: useVectorDiagnostics.ts's generation-guard +
+  // AbortController is what makes a second upload win even if this gate
+  // were somehow bypassed (e.g. a fast double-drop event landing before
+  // React re-renders 'parsing').
+  const isBusy = state.status === 'parsing'
+
+  const handleDragOver = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      e.preventDefault()
+      if (!isBusy) setIsDragging(true)
+    },
+    [isBusy],
+  )
 
   const handleDragLeave = useCallback(() => {
     setIsDragging(false)
@@ -268,19 +290,24 @@ export const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
     (e: React.DragEvent<HTMLDivElement>) => {
       e.preventDefault()
       setIsDragging(false)
+      if (isBusy) return
       const file = e.dataTransfer.files[0]
       if (file) onFile(file)
     },
-    [onFile],
+    [isBusy, onFile],
   )
 
   const handleInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0]
-      if (file) onFile(file)
+      if (file && !isBusy) onFile(file)
     },
-    [onFile],
+    [isBusy, onFile],
   )
+
+  const openFileDialog = useCallback(() => {
+    if (!isBusy) inputRef.current?.click()
+  }, [isBusy])
 
   return (
     <div style={{ marginBottom: 28 }}>
@@ -299,18 +326,19 @@ export const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
       <div
         id="iye-file-drop-zone"
         role="button"
-        tabIndex={0}
+        tabIndex={isBusy ? -1 : 0}
+        aria-disabled={isBusy}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        onClick={() => inputRef.current?.click()}
-        onKeyDown={(e) => e.key === 'Enter' && inputRef.current?.click()}
+        onClick={openFileDialog}
+        onKeyDown={(e) => e.key === 'Enter' && openFileDialog()}
         style={{
           border: `1px dashed ${isDragging ? COLORS.pink : COLORS.pinkBorder}`,
           borderRadius: 8,
           padding: '20px 16px',
           textAlign: 'center',
-          cursor: 'pointer',
+          cursor: isBusy ? 'default' : 'pointer',
           background: isDragging ? COLORS.pinkDim : 'transparent',
           transition: 'all 0.18s ease',
           outline: 'none',
@@ -321,6 +349,7 @@ export const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
           id="iye-file-input"
           type="file"
           accept=".json,.csv,.npy"
+          disabled={isBusy}
           style={{ display: 'none' }}
           onChange={handleInputChange}
         />
@@ -330,6 +359,7 @@ export const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
           onConfirmOffer={onConfirmOffer}
           onDismissOffer={onDismissOffer}
           onRetry={onRetry}
+          onCancel={onCancel}
         />
       </div>
     </div>

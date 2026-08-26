@@ -1,7 +1,15 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useVectorDiagnostics } from './useVectorDiagnostics'
-import { NETWORK_ERROR_MESSAGE } from '@canvas/upload/dataSourceState'
+import { NETWORK_ERROR_MESSAGE, UPLOAD_TIMEOUT_MESSAGE } from '@canvas/upload/dataSourceState'
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((r) => {
+    resolve = r
+  })
+  return { promise, resolve }
+}
 
 // ─── Minimal WebSocket stub — useVectorDiagnostics pulls in useVectorStream,
 // which opens a real WebSocket on mount. These tests only care about the
@@ -194,5 +202,153 @@ describe('useVectorDiagnostics — error taxonomy', () => {
       await result.current.retryIngest()
     })
     expect(result.current.dataSourceState.status).toBe('idle')
+  })
+})
+
+// ─── Concurrent-upload race safety (2026-08-28 sprint) ─────────────────────
+// Before this sprint, ingestFile -> attemptIngest -> postMatrix had no
+// generation counter and no AbortController: dropping a second file before
+// the first settled meant whichever fetch happened to resolve *last* won
+// unconditionally, silently reverting the canvas to stale data if the
+// earlier upload's response arrived after the later one's.
+
+function makeFrameResponse(frameId: string, x: number): Response {
+  return new Response(
+    JSON.stringify({
+      frame_id: frameId,
+      timestamp: new Date().toISOString(),
+      status: 'NOMINAL',
+      point_count: 1,
+      coordinates: [{ x, y: 0, z: 0 }],
+      cluster_labels: [0],
+      anomaly_indices: [],
+      explanation: null,
+      axis_mapping: null,
+    }),
+    { status: 200 },
+  )
+}
+
+function makeCsvFile(name: string): File {
+  return new File(['a,b,c\n1,2,3\n4,5,6\n'], name, { type: 'text/csv' })
+}
+
+/** Real fetch() rejects with an AbortError the moment its signal aborts,
+ *  even if the underlying request never otherwise settles — the mock fetch
+ *  in these tests is a bare deferred promise with nothing wired to the
+ *  signal by default, so cancelIngest/the upload timeout (both of which
+ *  work by calling AbortController.abort()) would just hang forever
+ *  against it without this. */
+function rejectOnAbort(signal: AbortSignal | null | undefined, promise: Promise<Response>): Promise<Response> {
+  if (!signal) return promise
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => reject(new DOMException('The operation was aborted.', 'AbortError'))
+    if (signal.aborted) {
+      onAbort()
+      return
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(resolve, reject)
+  })
+}
+
+describe('useVectorDiagnostics — concurrent upload race safety', () => {
+  it('drop A then B before A settles: B wins, and A resolving late is discarded', async () => {
+    const deferredA = deferred<Response>()
+    const deferredB = deferred<Response>()
+    let canvasVectorsCalls = 0
+    mockFetchRoutedBy(() => {
+      canvasVectorsCalls += 1
+      return canvasVectorsCalls === 1 ? deferredA.promise : deferredB.promise
+    })
+
+    const { result } = renderHook(() => useVectorDiagnostics())
+
+    act(() => {
+      void result.current.ingestFile(makeCsvFile('a.csv'))
+    })
+    await waitFor(() => expect(canvasVectorsCalls).toBe(1))
+
+    act(() => {
+      void result.current.ingestFile(makeCsvFile('b.csv'))
+    })
+    await waitFor(() => expect(canvasVectorsCalls).toBe(2))
+
+    // B (the newer upload) settles first.
+    await act(async () => {
+      deferredB.resolve(makeFrameResponse('frame-b', 222))
+      await deferredB.promise
+    })
+    await waitFor(() => expect(result.current.dataSourceState.status).toBe('loaded'))
+    expect(result.current.restFrame?.frame_id).toBe('frame-b')
+
+    // A (superseded, discarded) resolves late -- must NOT revert state to A.
+    await act(async () => {
+      deferredA.resolve(makeFrameResponse('frame-a', 111))
+      await deferredA.promise
+    })
+    expect(result.current.restFrame?.frame_id).toBe('frame-b')
+    expect(result.current.dataSourceState.status).toBe('loaded')
+  })
+
+  it('cancelIngest aborts the in-flight request and returns the panel to idle, not an error', async () => {
+    const deferredResponse = deferred<Response>()
+    let fetchCalls = 0
+    mockFetchRoutedBy((init) => {
+      fetchCalls += 1
+      return rejectOnAbort(init?.signal, deferredResponse.promise)
+    })
+    const { result } = renderHook(() => useVectorDiagnostics())
+
+    act(() => {
+      void result.current.ingestFile(makeCsvFile('slow.csv'))
+    })
+    // Wait for the actual network POST, not just 'parsing' — ingestFile
+    // sets 'parsing' for the (uncancellable, purely local) client-side
+    // parse phase too, before an AbortController even exists to cancel.
+    await waitFor(() => expect(fetchCalls).toBe(1))
+
+    act(() => {
+      result.current.cancelIngest()
+    })
+
+    await waitFor(() => expect(result.current.dataSourceState.status).toBe('idle'))
+    expect(result.current.restFrame).toBeNull()
+  })
+
+  it('a request that never responds times out into network_error, with retry armed', async () => {
+    vi.useFakeTimers()
+    const deferredResponse = deferred<Response>()
+    let fetchCalls = 0
+    mockFetchRoutedBy((init) => {
+      fetchCalls += 1
+      return rejectOnAbort(init?.signal, deferredResponse.promise)
+    })
+    const { result } = renderHook(() => useVectorDiagnostics())
+
+    await act(async () => {
+      void result.current.ingestFile(makeCsvFile('hung.csv'))
+      // Let the client-side CSV parse actually reach the network POST
+      // before fast-forwarding — the 30s upload timer only starts once
+      // that POST is issued, not from ingestFile's own initial 'parsing'.
+      await vi.waitFor(() => expect(fetchCalls).toBe(1))
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+
+    expect(result.current.dataSourceState.status).toBe('network_error')
+    if (result.current.dataSourceState.status === 'network_error') {
+      expect(result.current.dataSourceState.reason).toBe(UPLOAD_TIMEOUT_MESSAGE)
+    }
+
+    // retry is armed, exactly like any other network_error.
+    mockFetchRoutedBy(() => Promise.resolve(makeFrameResponse('frame-retry', 999)))
+    await act(async () => {
+      await result.current.retryIngest()
+    })
+    expect(result.current.dataSourceState.status).toBe('loaded')
+    vi.useRealTimers()
   })
 })

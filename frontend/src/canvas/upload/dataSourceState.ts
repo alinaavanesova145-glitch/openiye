@@ -52,6 +52,14 @@ export const IDLE_DATA_SOURCE_STATE: DataSourceState = { status: 'idle' }
  *  file-specific to report, unlike `rejected`/`error`'s per-file reasons. */
 export const NETWORK_ERROR_MESSAGE = 'backend unreachable · verify api on port 8050 · retry'
 
+/** A `network_error` whose specific cause was an ingest request that never
+ *  got a response within UPLOAD_TIMEOUT_MS (see useVectorDiagnostics.ts) —
+ *  reuses `network_error`'s status (and its retry action) since a timeout
+ *  is a connectivity-flavored failure, not a rejected-by-server one, but
+ *  gets its own copy: "unreachable" would be actively wrong when the
+ *  backend is up but just slow/hung. */
+export const UPLOAD_TIMEOUT_MESSAGE = 'backend timed out · no response within 30s · retry'
+
 /** True when a state's encoding facts should mention categorical encoding at all. */
 function hasEncodedCategoricals(encoding: EncodingSummary): boolean {
   return encoding.encodedCategoricalColumns > 0

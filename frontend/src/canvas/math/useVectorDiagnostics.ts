@@ -25,8 +25,17 @@ import { API_BASE } from '@lib/apiConfig'
 import {
   IDLE_DATA_SOURCE_STATE,
   NETWORK_ERROR_MESSAGE,
+  UPLOAD_TIMEOUT_MESSAGE,
   type DataSourceState,
 } from '@canvas/upload/dataSourceState'
+
+/** A hung/slow backend response otherwise left 'parsing' stuck forever with
+ *  no way out (2026-08-28 sprint) — matches the on-demand explain
+ *  endpoint's own 30s budget (EXPLAIN_LLM_TIMEOUT_SECONDS in
+ *  backend/app/api/main.py), a precedent for "a user actively waiting on
+ *  an upload deserves a similarly generous window," not an arbitrary
+ *  separate number. */
+const UPLOAD_TIMEOUT_MS = 30000
 
 /**
  * Thrown by postMatrix specifically when the backend was reached but
@@ -144,6 +153,9 @@ export interface VectorDiagnosticsResult {
   /** Re-attempts the last ingest that failed with `network_error`. No-op if
    *  nothing is pending. */
   retryIngest: () => Promise<void>
+  /** Aborts whichever ingest request is currently in flight, returning the
+   *  panel to idle. No-op if nothing is in flight. */
+  cancelIngest: () => void
   /** Send live axis remapping configuration to the backend stream. */
   configureStream: (config: StreamConfig) => void
   /** True when the canvas is driven by the live WebSocket stream. */
@@ -246,7 +258,11 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
   // 2026-07-07 sprint, Phase 1).
 
   const postMatrix = useCallback(
-    async (rows: number[][], encoding?: EncodingSummary): Promise<void> => {
+    async (
+      rows: number[][],
+      encoding: EncodingSummary | undefined,
+      signal: AbortSignal,
+    ): Promise<VectorFrame | null> => {
       const body: Record<string, unknown> = { matrix: rows }
       // Only sent when categorical encoding actually happened — omitted
       // entirely for a pure-numeric upload, so that request shape is
@@ -266,6 +282,7 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal,
       })
 
       if (!response.ok) {
@@ -280,14 +297,17 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
       // DiagnosticSidebar reading frame.temporal.window_fill) crash on undefined.
       // (The live WS frame carrying the real temporal/narrative data arrives
       // separately and takes rendering priority once it does — see isLive.)
-      if (isValidVectorFrame(frame)) {
-        const normalized: VectorFrame = {
-          ...frame,
-          id: frame.frame_id,
-          temporal: DEFAULT_TEMPORAL_METRICS,
-        }
-        setRestFrame(normalized)
-      }
+      //
+      // Deliberately doesn't call setRestFrame itself (2026-08-28 sprint) —
+      // it used to, unconditionally, which bypassed attemptIngest's
+      // generation guard entirely: a superseded request's late response
+      // could still silently overwrite restFrame with stale data even
+      // though the *visible* dataSourceState correctly stayed on the newer
+      // upload. Returning the frame and letting attemptIngest apply it
+      // (after re-checking the generation) closes that gap.
+      return isValidVectorFrame(frame)
+        ? { ...frame, id: frame.frame_id, temporal: DEFAULT_TEMPORAL_METRICS }
+        : null
     },
     [],
   )
@@ -305,20 +325,62 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
   // can re-POST without asking the user to re-select/re-drop the file.
   const pendingRetryRef = useRef<PendingIngest | null>(null)
 
+  // ── Race-safety for concurrent uploads (2026-08-28 sprint) ───────────────
+  // Mirrors useAnomalyExplain.ts's requestGenerationRef pattern, plus an
+  // AbortController this hook needs that the click-to-explain hook doesn't:
+  // dropping file B before file A settles must make B win unconditionally —
+  // including actually tearing down A's in-flight request, not just
+  // ignoring its eventual response — and 'parsing' needs a real way out
+  // (cancel, or a timeout) instead of hanging forever on a hung backend.
+  const requestGenerationRef = useRef(0)
+  const abortControllerRef = useRef<AbortController | null>(null)
+  // Set immediately before calling abort() so the resulting catch handler
+  // can tell *why* the request was aborted — fetch's AbortError itself
+  // doesn't distinguish supersede/user-cancel/timeout, and each needs
+  // different handling (silently ignore / return to idle / surface a
+  // timeout-flavored network_error).
+  const abortReasonRef = useRef<'cancel' | 'timeout' | null>(null)
+
   /** Shared by ingestFile and confirmOffer/retryIngest: POSTs, and on
    *  failure classifies + records a retry candidate + sets the right state.
-   *  Returns true on success. */
+   *  Returns true on success. A new call supersedes (aborts) any call
+   *  already in flight. */
   const attemptIngest = useCallback(
     async (pending: PendingIngest): Promise<boolean> => {
+      abortControllerRef.current?.abort() // supersede whatever was in flight
+      const controller = new AbortController()
+      abortControllerRef.current = controller
+      abortReasonRef.current = null
+      const generation = ++requestGenerationRef.current
+
+      const timeoutId = setTimeout(() => {
+        abortReasonRef.current = 'timeout'
+        controller.abort()
+      }, UPLOAD_TIMEOUT_MS)
+
+      let normalizedFrame: VectorFrame | null
       try {
-        await postMatrix(pending.rows, pending.encoding)
+        normalizedFrame = await postMatrix(pending.rows, pending.encoding, controller.signal)
       } catch (err) {
-        const { status, reason } = classifyIngestFailure(err)
+        clearTimeout(timeoutId)
+        if (requestGenerationRef.current !== generation) return false // superseded — the newer request owns state now
+        if (abortReasonRef.current === 'cancel') {
+          pendingRetryRef.current = null
+          setDataSourceState(IDLE_DATA_SOURCE_STATE)
+          return false
+        }
+        const { status, reason } =
+          abortReasonRef.current === 'timeout'
+            ? { status: 'network_error' as const, reason: UPLOAD_TIMEOUT_MESSAGE }
+            : classifyIngestFailure(err)
         console.error(`ingest failed (${status}): ${err instanceof Error ? err.message : 'unknown error'}`)
         pendingRetryRef.current = status === 'network_error' ? pending : null
         setDataSourceState({ status, filename: pending.filename, reason })
         return false
       }
+      clearTimeout(timeoutId)
+      if (requestGenerationRef.current !== generation) return false // superseded — the newer request owns state now
+      if (normalizedFrame) setRestFrame(normalizedFrame)
       pendingRetryRef.current = null
       setDataSourceState(settleDataSourceState(pending))
       return true
@@ -425,6 +487,17 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
     await attemptIngest(pending)
   }, [attemptIngest])
 
+  /** Aborts whichever ingest request is currently in flight (the network
+   *  POST specifically — client-side file parsing isn't cancellable this
+   *  way, but it's local and bounded by MAX_UPLOAD_BYTES, not the "hung
+   *  forever" risk this exists for). No-op if nothing is in flight. Returns
+   *  the panel to idle rather than surfacing an error — a user-initiated
+   *  cancel isn't a failure. */
+  const cancelIngest = useCallback((): void => {
+    abortReasonRef.current = 'cancel'
+    abortControllerRef.current?.abort()
+  }, [])
+
   // ── Data priority: live stream > REST upload ────────────────────────────
 
   const isLive = liveFrame !== null && streamState === 'connected'
@@ -471,6 +544,7 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
     confirmOffer,
     dismissOffer,
     retryIngest,
+    cancelIngest,
     configureStream,
     isLive,
     restFrame,
