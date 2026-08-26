@@ -72,6 +72,32 @@ describe('TacticalVectorField — instance counts', () => {
   })
 })
 
+describe('TacticalVectorField — instanced mesh pre-allocation (Phase 7 perf fix)', () => {
+  it('the same InstancedMesh instance survives a nominal-count change within capacity (no remount)', async () => {
+    // 2 nominal points, 0 anomalous.
+    const positionsA = new Float32Array([0, 0, 0, 1, 1, 1])
+    const renderer = await ReactThreeTestRenderer.create(
+      <TacticalVectorField {...baseProps({ positions: positionsA, clusterLabels: [0, 0] })} />,
+    )
+    const meshBefore = renderer.scene.find((node) => isInstancedMesh(node.instance)).instance
+    expect((meshBefore as unknown as { count: number }).count).toBe(2)
+
+    // 3 nominal points now (one more point, still well within capacity) —
+    // the pre-fix `key={count}` would have forced a full unmount/remount
+    // here, tearing down and reallocating the GPU buffer for a change
+    // this ordinary (e.g. one anomaly resolving back to nominal).
+    const positionsB = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2])
+    await renderer.update(
+      <TacticalVectorField {...baseProps({ positions: positionsB, clusterLabels: [0, 0, 0] })} />,
+    )
+    const meshAfter = renderer.scene.find((node) => isInstancedMesh(node.instance)).instance
+
+    expect(meshAfter).toBe(meshBefore) // same underlying THREE object — no remount
+    expect((meshAfter as unknown as { count: number }).count).toBe(3)
+    await renderer.unmount()
+  })
+})
+
 describe('TacticalVectorField — cluster hull color stability (regression for the 2026-08-28 fix)', () => {
   // Two clusters, 4 non-coplanar points each — enough for ConvexGeometry
   // to succeed for both, so both hulls actually render.

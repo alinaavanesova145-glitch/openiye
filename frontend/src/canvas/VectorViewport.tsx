@@ -149,6 +149,22 @@ interface CoreNodesProps {
   clusterLabels: number[]
 }
 
+// Pre-allocated once at a generous fixed capacity (2026-08-28 sprint) —
+// `args={[undefined, undefined, N]}` fixes the GPU buffer size at
+// construction, and the previous `key={count}` forced React to fully
+// unmount/remount the instancedMesh (tearing down and rebuilding that
+// buffer) on every single nominal-count change, including the ordinary
+// case of one anomaly appearing or resolving. mesh.count (set in the
+// effect below) is what actually controls how many of the allocated
+// instances the GPU draws each frame — that in-place mutation was already
+// correct; only the *allocation* was needlessly tied to the exact live
+// count. An octahedronGeometry this small (6 vertices) makes 5000
+// instances' worth of matrix/color buffers trivial GPU memory regardless
+// of how many are actually in use. A dataset that genuinely exceeds this
+// falls back to the old remount-on-resize behavior for the overflow
+// amount — correctness first; this only optimizes the common case.
+const INSTANCED_MESH_CAPACITY = 5000
+
 const InstancedCoreNodes = memo(function InstancedCoreNodes({
   positions,
   nominalIndices,
@@ -156,6 +172,8 @@ const InstancedCoreNodes = memo(function InstancedCoreNodes({
 }: CoreNodesProps) {
   const meshRef = useRef<THREE.InstancedMesh>(null)
   const count = nominalIndices.length || 1
+  const overflowed = count > INSTANCED_MESH_CAPACITY
+  const allocatedCount = overflowed ? count : INSTANCED_MESH_CAPACITY
 
   useEffect(() => {
     const mesh = meshRef.current
@@ -183,8 +201,8 @@ const InstancedCoreNodes = memo(function InstancedCoreNodes({
   return (
     <instancedMesh
       ref={meshRef}
-      args={[undefined, undefined, count]}
-      key={count}
+      args={[undefined, undefined, allocatedCount]}
+      key={overflowed ? `overflow-${String(count)}` : 'fixed'}
       frustumCulled={false}
     >
       <octahedronGeometry args={[0.055, 0]} />
