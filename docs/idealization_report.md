@@ -3355,3 +3355,309 @@ f43893f fix(frontend): remove /app _redirects rule -- it caused an infinite loop
 All pushed to `origin/main`, all individually confirmed green in CI by
 run id before moving to the next phase (`33000874315`, `33001423365`,
 `33002689329`).
+
+# 2026-08-28 — Sprint: product-quality pass — real bugs, not infra
+
+Explicit framing for this sprint, different from most of what precedes
+it: deployment/CI/dependency hygiene were already solid (see the last
+several entries), so the goal was IYE actually working correctly and
+feeling polished for a real user. Two prior audits had already produced
+a concrete worklist; this sprint's Phase 0 covered the one area neither
+had touched (backend correctness), then re-verified every other finding
+against current `main` before fixing it, phase by phase, in the exact
+order given.
+
+## Phase 0 — backend correctness audit
+
+Read `backend/app/api/main.py` in full (REST/WS endpoints, StreamHub,
+Ollama narrative generation), `backend/app/api/temporal_engine.py`
+(velocity/acceleration/drift/EMA sliding-window math, hysteresis), and
+`sdk/iye/__init__.py` + `sdk/iye/encoding.py` (UMAP/HDBSCAN/Z-score
+pipeline), cross-referenced against `docs/temporal_calibration.md` and
+`backend/tests/`. Ran `pytest tests/ -q`: **124 passed**, the real
+result, not assumed.
+
+**Solid, confirmed by reading the code, not by trusting the README**:
+- Ollama timeout → fallback string: `generate_anomaly_explanation`
+  (`main.py:88-116`) wraps the httpx call in try/except, catches broadly,
+  logs, returns `LLM_FALLBACK_TEXT` — matches the README's claim exactly.
+- Network errors → `network_error` not silent failure: confirmed on the
+  frontend side too — `classifyIngestFailure`
+  (`useVectorDiagnostics.ts`) correctly distinguishes a transport
+  `TypeError` from a reached-but-rejected response, with its own retry
+  path (`pendingRetryRef`).
+- Numerical edge cases: `reduce_to_3d`/`cluster`/`compute_z_scores`
+  (`sdk/iye/__init__.py`) all guard division-by-zero (`safe_stds`),
+  single-point/all-identical-value windows, and the empirically-diagnosed
+  UMAP/HDBSCAN small-`n` crash boundary (`MIN_SAMPLES_FOR_REDUCTION`) —
+  all pre-existing, all still correct.
+- `StreamHub.broadcast_text` (`main.py:269-281`) fans out concurrently
+  with a per-client timeout so one slow/dead socket can't stall the
+  others, and drops stale connections cleanly. Narrative tasks
+  (`_spawn_narrative_task`) are tracked and cancelled on shutdown
+  (`_cancel_pending_narratives`) — no "Task was destroyed but it is
+  pending" risk.
+
+**One real finding, not fixed this sprint (see Remaining known gaps)**:
+`temporal_engine = TemporalEngine()` (`main.py:294`) is a single
+module-level global with no `reset()` method and no test for cross-
+session isolation — every `/api/canvas/vectors` call, REST upload or
+live `iye.show()`, folds into the *same* sliding window regardless of
+whether the data is at all related. Uploading file A, then later file B,
+computes B's velocity/drift against A's last centroid, which is
+spurious. `backend/tests/test_temporal_engine_integration.py` has
+exactly one test, covering three sequential frames from the *same*
+logical stream — confirmed via `grep` that no cross-session test exists.
+Judged out of the sprint's fix-list (not explicitly named in the
+Phase 1-7 worklist, and "when should this reset" is a real product
+decision — every upload? only on WS reconnect? — not a mechanical fix).
+
+**Very minor, noted but not fixed**: `stream_endpoint`'s WS receive loop
+(`main.py:741-757`) only catches `WebSocketDisconnect`; a client sending
+a binary frame instead of text would raise something else, uncaught.
+Self-correcting (the `finally` block still disconnects the client
+cleanly) and not part of the worklist — mentioned for completeness, not
+acted on.
+
+## Phase 1 — CRITICAL: uploaded/REST data never reached the 3D canvas
+
+Confirmed exactly as described: `App.tsx` rendered `<VectorViewport />`
+with zero props; `VectorViewport.tsx` called its own private
+`useVectorStream()` — a second, independent WebSocket connection, with
+its own reconnect-backoff timer, doubling backend broadcast fan-out.
+`useVectorDiagnostics.ts` already computed `activeFrame` (live-vs-REST
+priority) correctly and was already unit-tested — nothing ever passed it
+to the canvas.
+
+Fix: `useVectorDiagnostics` is now the single `useVectorStream()` owner
+for the whole app, and additionally derives `activePositions`/
+`activeAnomalyIndices`/`activeClusterLabels`/`activePointZScores`/
+`activePointFeatureAttributions` from `activeFrame`, plus passes through
+`temporalRef`/`narrativeHistory`. `VectorViewport` became a pure props-
+driven component (`VectorViewportProps`) — no hook calls for stream data
+at all — wired through `App` → `ViewportPanel`. `positions` specifically
+stays `isLive`-branched (the live path keeps `useVectorStream`'s own
+reference-stable `Float32Array`; REST gets a small `useMemo` over
+`restFrame.coordinates`) so the referential-stability optimization on the
+live path survived the move untouched; the other four fields don't need
+that branch since they're already-stable fields directly on `VectorFrame`,
+live or REST. Also retargeted `VectorViewport`'s regime/explanation/
+tooltip logic from the stale `liveFrame`-only reference to `activeFrame`,
+so the terminal card and beacon tooltips reflect whatever's actually
+displayed.
+
+Added `App.upload-wiring.test.tsx`: mocks `VectorViewport`'s default
+export to capture its props, drives a real upload through
+`DataSourcePanel`'s actual file input, asserts the captured props carry
+the uploaded frame's exact coordinates. `DemoWidget.tsx` (landing page)
+was unaffected — it only imports the already-prop-driven
+`TacticalVectorField`/`PointNarrativePanel` exports, never the default
+`VectorViewport` component whose signature changed.
+
+## Phase 2 — HIGH: upload race condition
+
+Confirmed: `ingestFile` → `attemptIngest` → `postMatrix` had no
+generation counter and no `AbortController`, unlike the sibling
+`useAnomalyExplain.ts` (which already had the generation-counter pattern,
+though — corrected while reading it — not an `AbortController` either).
+Added both, plus a 30s timeout (matching the backend's own
+`EXPLAIN_LLM_TIMEOUT_SECONDS` precedent) and a new `cancelIngest`. Each
+abort reason (supersede / user cancel / timeout) gets distinct handling.
+
+**The concurrent-upload test caught a real bug in the fix's own first
+draft**: `postMatrix` called `setRestFrame` directly, completely
+bypassing the generation guard, which only protected `dataSourceState`.
+A superseded request's late response was still silently overwriting the
+canvas's actual data even though the sidebar correctly kept showing the
+newer upload. Fixed by having `postMatrix` return the normalized frame
+instead of setting state itself, applied in `attemptIngest` only after
+re-checking the generation — this is exactly the "silently wrong data"
+failure mode the phase set out to fix, and it very nearly shipped anyway
+inside the fix meant to prevent it.
+
+`DataSourcePanel`'s drop zone now disables (`aria-disabled`, gated
+drag/drop/click/input handlers) while a request is in flight, and
+`'parsing'` renders a cancel button. Added the concurrent-upload test
+(drop A then B before A settles, assert B wins and A's late response is
+discarded), a cancel test, and a timeout test — none existed before.
+
+## Phase 3 — visual/data-tracking correctness in the 3D canvas
+
+1. **Cluster hull color flicker** (`VectorViewport.tsx`'s
+   `ClusterHulls`): confirmed exactly as described — `toggle++ % 2`
+   assigned color by Map-iteration/insertion order, not the cluster's own
+   `label`. `InstancedCoreNodes` already had this right (`cluster % 2`).
+   Extracted the correct rule into a shared, exported, unit-tested
+   `isClusterCyan(label)` and made both components use it — also fixes a
+   latent inconsistency where a cluster's hull color and its own points'
+   color were computed independently and could already disagree before
+   this fix.
+2. **`point_z_scores`/`point_feature_attributions` defeated
+   memoization**: confirmed — `useVectorStream.ts`'s reuse-identity-when-
+   unchanged pattern (positions/cluster_labels/anomaly_indices) was never
+   extended to these two fields when they were added in later sprints.
+   Added `pointZScoresEqual`/`featureAttributionsEqual` and the matching
+   `last*Ref` pattern. Writing the referential-stability test for this
+   surfaced a real, separate bug in the *test helper* itself:
+   `makeFrameMessage`'s `point_z_scores` param was typed as `{x,y,z}[]`
+   objects, but the actual wire format (`iye.compute_z_scores(...)
+   .tolist()`) is `[x,y,z]` number-triples — never caught because no
+   prior test in that file populated the field with real data.
+
+## Phase 4 — accessibility
+
+1. **Contrast**: a real relative-luminance calculation (not eyeballed)
+   confirmed `textMuted` (`whiteAlpha(0.38)`, 3.51:1) and
+   `pinkText50` (`pinkAlpha(0.5)`, 3.63:1) both failed WCAG AA's 4.5:1
+   floor against `#0a0a0d` — real body text (drop-zone hints, frame-
+   metadata values, status labels, the 'partial' message), not
+   decorative. `textMuted` raised to 0.47 (4.82:1) in both
+   `DataSourcePanel.tsx` and `DiagnosticSidebar.tsx`. `pinkText50` as a
+   distinct tier is gone entirely: the AA floor for this hue only clears
+   at alpha ≈0.577, leaving no room below `pinkText60`'s existing 0.6 for
+   a meaningfully-dimmer-but-still-legal tier — its one call site now
+   uses `pinkText60` directly rather than a same-looking constant under a
+   now-misleading name. Added `theme.contrast.test.ts`: a real
+   `contrastRatio()` utility (exported from `theme.ts`) plus tests
+   against the actual exported `COLORS` objects both files render with.
+2. **Keyboard activation**: confirmed — the drop zone's `onKeyDown` only
+   checked `e.key === 'Enter'`, no Space, no `preventDefault`. Fixed per
+   WAI-ARIA APG.
+3. **Live regions**: confirmed — no `aria-live`/`role="status"` anywhere.
+   Added `role="status"` (implies `aria-live="polite"`) to
+   `DataSourcePanel`'s status region and both of `DiagnosticSidebar`'s
+   connectivity/LLM indicators.
+
+## Phase 5 — minor UX fixes
+
+1. `useAnomalyExplain.ts`'s explain fetch had no timeout — added the same
+   `AbortController` + timeout approach as Phase 2 (35s, a small buffer
+   over the backend's own 30s budget for this endpoint). `dismiss()` now
+   also aborts the in-flight request instead of only ignoring its result.
+   Writing this test surfaced a real bug in the *test file's* `mockFetch`
+   helper: its handler was declared to receive `init` as its first
+   parameter, but fetch's real signature is `(url, init)` — `init` was
+   silently receiving the URL string, so every abort-dependent assertion
+   had been testing nothing.
+2. `DataSourcePanel.tsx`'s file input never reset `e.target.value` —
+   confirmed, fixed: re-selecting the identical filename via click-to-
+   browse now fires `change` again (drag-and-drop was unaffected).
+
+## Phase 6 — close the real reason these bugs survived ~25 sprints
+
+Confirmed: zero component-level test coverage on the actual R3F render
+tree. Installed `@react-three/test-renderer@8.2.4` — the one version
+whose peer range (`react >=18 <19`, `@react-three/fiber >=8 <9`) actually
+matches this project (the package's 9.x/10.x/11.x lines all require
+fiber 9 / React 19, checked against the npm registry before installing,
+not assumed).
+
+- `VectorViewport.tactical-field.test.tsx`: real R3F mounts proving what
+  pure-function tests couldn't — instanced core mesh count matches the
+  nominal point count, cluster hull color is stable by label across
+  iteration-order changes (would have caught Phase 3.1 directly, at the
+  mount level), beacons mount/unmount as `anomaly_indices` changes.
+- `VectorViewport.props-wiring.test.tsx`: the default-exported
+  `VectorViewport` itself. Its own `<Canvas>` needs a real WebGL context
+  the test renderer doesn't provide (it replaces Canvas's *content*, not
+  Canvas itself) — mocking `Canvas` to a bare passthrough wasn't enough
+  either: react-dom renders the R3F intrinsic tags as opaque custom
+  elements, but `InstancedCoreNodes`/`TracerLines`'s own effects then
+  call real THREE methods on refs that are now plain DOM nodes, which
+  throws. Canvas is mocked to render nothing at all instead; every
+  assertion here targets the plain HTML VectorViewport renders alongside
+  it. Proves props actually drive what renders (would have caught
+  Phase 1 directly) and that the terminal card reads `activeFrame`, not a
+  stale `liveFrame`.
+- `DemoWidget.test.tsx`: had no test file of its own at all
+  (`LandingApp.test.tsx` mocks it away; the hooks/fixtures it consumes
+  were tested, the component wasn't). Same Canvas-mocking approach.
+- `dataSourceState.test.ts`: `formatPartialMessage`/`formatLoadedMessage`/
+  `formatOfferMessage` had real branching logic (encoded-categoricals
+  clause, skipped-free-text clause, dropped-rows singular/plural, the
+  zero-numeric-columns special case) and no test file.
+- `useVectorDiagnostics.test.ts`: added `activeFrame`'s live-vs-rest
+  resolution end to end (no data / REST-only / live-over-REST priority /
+  fallback to REST on live disconnect) — exactly the gap Phase 1's bug
+  lived in, untested, until now.
+
+## Phase 7 — performance (lower priority, done — time allowed)
+
+Confirmed: `InstancedCoreNodes`'s `key={count}` forced a full unmount/
+remount (GPU buffer teardown + reallocation) on every nominal-count
+change, including one anomaly appearing or resolving. Pre-allocated at a
+fixed `INSTANCED_MESH_CAPACITY` (5000 — trivial GPU memory for an
+octahedron this small regardless of how many of the allocation are
+actually drawn) and let `mesh.count` (already mutated correctly in place)
+control the live count; a dataset that genuinely exceeds the fixed
+capacity falls back to the old remount-on-resize behavior for the
+overflow amount. Added a test asserting the same underlying `InstancedMesh`
+object survives a within-capacity count change (no remount) — the pre-fix
+code would have failed this test with a different object reference.
+
+## Full verification, this sprint's final state
+
+| Check | Result |
+|---|---|
+| `rm -rf node_modules && npm ci` (clean, from scratch) | clean, 0 vulnerabilities |
+| `tsc --noEmit` | clean |
+| `eslint . --max-warnings 0` | clean |
+| `vitest run` | **243 passed (243)** — was 184 at the start of this sprint |
+| `npm run build` | clean |
+| `pytest tests/ -q` (backend) | **124 passed (124)** — unchanged, no backend fixes were in scope |
+
+## Files touched this sprint
+
+**Created**: `frontend/src/App.upload-wiring.test.tsx`,
+`frontend/src/canvas/VectorViewport.cluster-color.test.ts`,
+`frontend/src/canvas/VectorViewport.tactical-field.test.tsx`,
+`frontend/src/canvas/VectorViewport.props-wiring.test.tsx`,
+`frontend/src/canvas/upload/dataSourceState.test.ts`,
+`frontend/src/lib/theme.contrast.test.ts`,
+`frontend/src/landing/DemoWidget.test.tsx`.
+
+**Modified**: `frontend/src/App.tsx`,
+`frontend/src/canvas/VectorViewport.tsx`,
+`frontend/src/canvas/math/useVectorDiagnostics.ts` (+`.test.ts`),
+`frontend/src/canvas/math/useVectorStream.ts` (+`.test.ts`),
+`frontend/src/canvas/math/useAnomalyExplain.ts` (+`.test.ts`),
+`frontend/src/canvas/upload/dataSourceState.ts`,
+`frontend/src/ui/DataSourcePanel.tsx` (+`.test.tsx`),
+`frontend/src/ui/DiagnosticSidebar.tsx` (+`.test.tsx`),
+`frontend/src/lib/theme.ts`, `frontend/package.json` /
+`frontend/package-lock.json` (`+@react-three/test-renderer`).
+
+## Remaining known gaps (deliberately not touched, and why)
+
+1. **The backend's `temporal_engine` global never resets across
+   unrelated ingestion sessions** (Phase 0 finding). Real, but not in
+   this sprint's Phase 1-7 worklist, and the right reset trigger is a
+   product decision (every new upload? only WS reconnect?), not a
+   mechanical fix. Worth its own sprint, backend-focused this time.
+2. **`stream_endpoint`'s WS receive loop only catches
+   `WebSocketDisconnect`** (Phase 0 finding, very minor) — a binary frame
+   from a misbehaving client would raise something uncaught, though the
+   `finally` block still disconnects cleanly. Not in the worklist.
+3. **`INSTANCED_MESH_CAPACITY` (5000) is a judgment call, not a measured
+   limit** — chosen for "comfortably larger than any realistic anomaly-
+   dashboard frame size, trivial GPU memory regardless." A dataset that
+   exceeds it still works correctly (falls back to remount-on-resize),
+   just without this sprint's optimization for that rare case.
+4. **Domain purchase and email remain deliberately out of scope**, per
+   `docs/free_tier_launch_steps.md` — unchanged from every prior sprint's
+   note on this.
+
+## Commits ready for review
+
+```
+e71acaf fix(frontend): wire uploaded/REST data into the 3D canvas (CRITICAL)
+d98ac3a fix(frontend): upload race condition -- stuck spinner + silently wrong data
+615e094 fix(frontend): cluster hull color flicker + defeated memoization
+36e4f49 fix(frontend): accessibility -- contrast, Space-key activation, live regions
+06f58d1 fix(frontend): explain-request timeout + file re-selection bug
+f4ae015 test(frontend): real R3F mount coverage + close remaining test gaps
+36d9fb8 perf(frontend): stop rebuilding the instanced-node GPU buffer every frame
+```
+
+Pushed to `origin/main` as part of this sprint (this session has GitHub
+push access — confirmed in prior sprints).
