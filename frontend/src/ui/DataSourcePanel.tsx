@@ -315,6 +315,14 @@ export const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
   const handleInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0]
+      // Reset the input's value (2026-08-28 sprint) — a browser's <input
+      // type="file"> only fires 'change' when its value actually changes,
+      // so re-selecting the exact same filename via click-to-browse (drag-
+      // and-drop is unaffected — it never goes through this input at all)
+      // fired no event and silently did nothing. Reset unconditionally,
+      // even when busy/no file chosen, so a cancelled file-picker dialog
+      // doesn't leave a stale value blocking the next identical selection.
+      e.target.value = ''
       if (file && !isBusy) onFile(file)
     },
     [isBusy, onFile],

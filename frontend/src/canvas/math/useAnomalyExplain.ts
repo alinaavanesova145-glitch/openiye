@@ -63,6 +63,16 @@ class ServerExplainError extends Error {
   }
 }
 
+// A user actively waiting on a specific point deserves a bound on "how
+// long could this possibly hang," same reasoning as
+// useVectorDiagnostics.ts's UPLOAD_TIMEOUT_MS (2026-08-28 sprint — this
+// fetch had no timeout at all before). A few seconds of buffer over the
+// backend's own EXPLAIN_LLM_TIMEOUT_SECONDS=30s budget for this exact
+// endpoint, so the frontend doesn't give up right as the backend's own
+// timeout-driven fallback would have arrived.
+const EXPLAIN_TIMEOUT_MS = 35000
+const EXPLAIN_TIMEOUT_MESSAGE = 'no response within 35s · the local LLM may be slow or hung · try again'
+
 function classifyExplainFailure(err: unknown): string {
   if (err instanceof TypeError) {
     return 'backend unreachable · check the server is running'
@@ -81,10 +91,29 @@ export function useAnomalyExplain(): AnomalyExplainResult {
   // landing after a newer click has already moved on — only the request
   // matching the current generation is allowed to update state.
   const requestGenerationRef = useRef(0)
+  // The in-flight explain request's AbortController, if any — aborted
+  // when a newer click supersedes it, dismiss() closes the panel, or the
+  // EXPLAIN_TIMEOUT_MS timer fires. dismiss() already bumps the
+  // generation counter itself, so a dismiss-triggered abort is caught by
+  // the plain generation check below without needing its own reason —
+  // only a timeout needs to be told apart from a genuine network/server
+  // failure, since it's the one case that must still produce a visible
+  // result within the *same* (not-yet-superseded-or-dismissed) generation.
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const abortedByTimeoutRef = useRef(false)
 
   const explainPoint = useCallback((point: ExplainablePoint) => {
+    abortControllerRef.current?.abort() // supersede whatever was in flight
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+    abortedByTimeoutRef.current = false
     const generation = ++requestGenerationRef.current
     setExplainState({ status: 'loading', pointIndex: point.pointIndex })
+
+    const timeoutId = setTimeout(() => {
+      abortedByTimeoutRef.current = true
+      controller.abort()
+    }, EXPLAIN_TIMEOUT_MS)
 
     const body = {
       point_index: point.pointIndex,
@@ -99,8 +128,10 @@ export function useAnomalyExplain(): AnomalyExplainResult {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: controller.signal,
     })
       .then(async (response) => {
+        clearTimeout(timeoutId)
         if (!response.ok) {
           const errorBody: unknown = await response.json().catch(() => null)
           const detail =
@@ -126,17 +157,19 @@ export function useAnomalyExplain(): AnomalyExplainResult {
         setExplainState({ status: 'success', pointIndex: point.pointIndex, explanation })
       })
       .catch((err: unknown) => {
-        if (requestGenerationRef.current !== generation) return // superseded by a newer click
+        clearTimeout(timeoutId)
+        if (requestGenerationRef.current !== generation) return // superseded or dismissed
         setExplainState({
           status: 'error',
           pointIndex: point.pointIndex,
-          reason: classifyExplainFailure(err),
+          reason: abortedByTimeoutRef.current ? EXPLAIN_TIMEOUT_MESSAGE : classifyExplainFailure(err),
         })
       })
   }, [])
 
   const dismiss = useCallback(() => {
     requestGenerationRef.current++ // invalidate any in-flight request
+    abortControllerRef.current?.abort() // and actually tear it down, not just ignore its result
     setExplainState({ status: 'idle' })
   }, [])
 

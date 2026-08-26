@@ -15,8 +15,27 @@ const SAMPLE_POINT: ExplainablePoint = {
   featureAttributions: [],
 }
 
-function mockFetch(handler: () => Promise<Response>) {
-  vi.stubGlobal('fetch', vi.fn(handler))
+function mockFetch(handler: (init?: RequestInit) => Promise<Response>) {
+  // fetch's real signature is (url, init) — forwarding just `handler` to
+  // vi.fn would have made `init` (the param every caller here actually
+  // wants, for its .signal) silently receive `url` instead.
+  vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => handler(init)))
+}
+
+/** Real fetch() rejects with an AbortError the moment its signal aborts —
+ *  see useVectorDiagnostics.test.ts's identical helper for why a mock
+ *  fetch needs this wired in explicitly to simulate a timeout/abort. */
+function rejectOnAbort(signal: AbortSignal | null | undefined, promise: Promise<Response>): Promise<Response> {
+  if (!signal) return promise
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => reject(new DOMException('The operation was aborted.', 'AbortError'))
+    if (signal.aborted) {
+      onAbort()
+      return
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(resolve, reject)
+  })
 }
 
 describe('useAnomalyExplain', () => {
@@ -174,5 +193,59 @@ describe('useAnomalyExplain', () => {
         explanation: 'fresh answer',
       })
     })
+  })
+
+  // NEW 2026-08-28 — this fetch had no timeout at all: a hung/slow backend
+  // response left the narrative panel stuck on "generating explanation…"
+  // forever, with no way out except dismiss (which requires already
+  // knowing something's wrong, not being told).
+  it('a request that never responds times out into a distinct, actionable error', async () => {
+    vi.useFakeTimers()
+    let fetchCalls = 0
+    const neverResolves = new Promise<Response>(() => {})
+    mockFetch((init) => {
+      fetchCalls += 1
+      return rejectOnAbort(init?.signal, neverResolves)
+    })
+    const { result } = renderHook(() => useAnomalyExplain())
+
+    await act(async () => {
+      result.current.explainPoint(SAMPLE_POINT)
+      await vi.waitFor(() => expect(fetchCalls).toBe(1))
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(35_000)
+    })
+
+    expect(result.current.explainState.status).toBe('error')
+    if (result.current.explainState.status === 'error') {
+      expect(result.current.explainState.reason).toContain('35s')
+      expect(result.current.explainState.reason).not.toContain('unreachable') // not misclassified as a TypeError
+    }
+    vi.useRealTimers()
+  })
+
+  it('dismiss aborts the in-flight request, not just ignores its eventual result', async () => {
+    const abortSpy = vi.fn()
+    mockFetch(
+      (init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            abortSpy()
+            reject(new DOMException('aborted', 'AbortError'))
+          })
+        }),
+    )
+    const { result } = renderHook(() => useAnomalyExplain())
+
+    act(() => {
+      result.current.explainPoint(SAMPLE_POINT)
+    })
+    act(() => {
+      result.current.dismiss()
+    })
+
+    expect(abortSpy).toHaveBeenCalledOnce()
   })
 })

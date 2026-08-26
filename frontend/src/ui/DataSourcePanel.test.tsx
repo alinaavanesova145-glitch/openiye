@@ -298,6 +298,21 @@ describe('DataSourcePanel', () => {
   // WAI-ARIA APG), and never called preventDefault — a keyboard user
   // pressing Space got an unexpected page scroll instead of the file
   // dialog opening.
+  // NEW 2026-08-28 — a browser's <input type="file"> only fires 'change'
+  // when its value actually changes, so re-selecting the exact same
+  // filename via click-to-browse fired no event and silently did nothing
+  // (drag-and-drop, which never goes through this input, was unaffected).
+  it('resets the file input value after a selection, so picking the same file again still fires change', () => {
+    const onFile = vi.fn()
+    render(<DataSourcePanel state={{ status: 'idle' }} onFile={onFile} />)
+    const input = document.getElementById('iye-file-input') as HTMLInputElement
+    const file = new File(['a,b\n1,2\n'], 'same.csv', { type: 'text/csv' })
+
+    fireEvent.change(input, { target: { files: [file] } })
+    expect(onFile).toHaveBeenCalledOnce()
+    expect(input.value).toBe('')
+  })
+
   describe('keyboard activation', () => {
     // clickSpy asserts "at least once," not an exact count: the hidden
     // <input> is a DOM child of the drop zone div, so input.click()'s own
