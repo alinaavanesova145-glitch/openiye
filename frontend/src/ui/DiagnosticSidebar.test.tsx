@@ -119,4 +119,22 @@ describe('DiagnosticSidebar', () => {
     )
     expect(screen.getByText('llm · offline · fallback narratives')).toBeInTheDocument()
   })
+
+  // NEW 2026-08-28 — neither indicator announced its own changes to
+  // screen-reader users (a disconnect, a reconnect, an anomaly) before
+  // this sprint added role="status" to both.
+  it('the connectivity and llm indicators are both live regions (role="status")', () => {
+    render(
+      <DiagnosticSidebar
+        streamState="connected"
+        activeFrame={null}
+        isLive={false}
+        llmStatus="ready"
+      />,
+    )
+    const statusRegions = screen.getAllByRole('status')
+    const ids = statusRegions.map((el) => el.id)
+    expect(ids).toContain('iye-connectivity-indicator')
+    expect(ids).toContain('iye-llm-indicator')
+  })
 })

@@ -21,7 +21,10 @@ import { THEME, pinkAlpha, whiteAlpha } from '@lib/theme'
 // this sidebar's own status-specific accents (anomaly / socket-offline),
 // not part of the shared base palette reused elsewhere.
 
-const COLORS = {
+// Exported so theme.contrast.test.ts can check these exact values (the
+// real ones every render uses), not a hand-copied duplicate that could
+// silently drift from what's actually in use.
+export const COLORS = {
   bg: THEME.bg,
   pink: THEME.pink,
   magenta: '#ff00ff',
@@ -32,7 +35,12 @@ const COLORS = {
   white10: whiteAlpha(0.06),
   white20: whiteAlpha(0.12),
   textPrimary: whiteAlpha(0.88),
-  textMuted: whiteAlpha(0.38),
+  // 2026-08-28: was whiteAlpha(0.38) — measured 3.51:1 against #0a0a0d,
+  // under WCAG AA's 4.5:1 floor for normal text, despite being real body
+  // text here (frame-metadata values, connectivity/LLM status labels),
+  // not decorative. 0.47 clears it at 4.82:1 — see
+  // theme.contrast.test.ts.
+  textMuted: whiteAlpha(0.47),
   divider: pinkAlpha(0.08),
 } as const
 
@@ -51,6 +59,9 @@ export interface DiagnosticSidebarProps {
 
 /**
  * Visual connectivity state dot with context-aware color and pulse animation.
+ * `role="status"` (2026-08-28 sprint) announces label changes (disconnect/
+ * reconnect, anomaly detected) to screen-reader users, who otherwise had
+ * no signal at all that this text had changed.
  */
 const ConnectivityDot: React.FC<{
   streamState: StreamState
@@ -77,6 +88,8 @@ const ConnectivityDot: React.FC<{
   return (
     <div
       id="iye-connectivity-indicator"
+      role="status"
+      aria-live="polite"
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -128,6 +141,8 @@ const LlmIndicator: React.FC<{ llmStatus: LlmStatus }> = ({ llmStatus }) => {
   return (
     <div
       id="iye-llm-indicator"
+      role="status"
+      aria-live="polite"
       style={{
         display: 'flex',
         alignItems: 'center',

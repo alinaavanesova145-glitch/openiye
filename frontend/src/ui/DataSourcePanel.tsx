@@ -23,18 +23,33 @@ import { THEME, pinkAlpha, whiteAlpha } from '@lib/theme'
 
 // ─── Design Tokens ────────────────────────────────────────────────────────────
 // 2026-08-01: base pink sourced from @lib/theme instead of a fourth
-// independent hardcoded copy. The three pink-text opacity tiers
-// (50/60/70%) are this panel's own hierarchy choice, preserved exactly —
-// unifying the base color doesn't mean forcing every opacity to one value.
+// independent hardcoded copy. The pink-text opacity tiers are this panel's
+// own hierarchy choice, preserved exactly — unifying the base color
+// doesn't mean forcing every opacity to one value.
+//
+// 2026-08-28: pinkText50 (0.5) and the original textMuted (whiteAlpha 0.38)
+// both measured under WCAG AA's 4.5:1 normal-text floor against #0a0a0d
+// (3.63:1 and 3.51:1 respectively — see
+// VectorViewport.contrast.test.ts/theme.contrast.test.ts) despite being
+// real body-text colors here (drop-zone hints, the 'partial' status
+// message), not decorative. textMuted raised to 0.47 (4.82:1). pinkText50
+// as a distinct tier below pinkText60 is gone entirely: the AA floor for
+// this hue only clears at alpha ~0.577, which leaves no meaningful gap
+// below pinkText60's existing 0.6 (4.78:1) for a dimmer-but-still-legal
+// tier to live in — so the one call site that used it now uses
+// pinkText60 directly instead of a same-looking constant under a
+// different, now-misleading name.
 
-const COLORS = {
+// Exported so theme.contrast.test.ts can check these exact values (the
+// real ones every render uses), not a hand-copied duplicate that could
+// silently drift from what's actually in use.
+export const COLORS = {
   pink: THEME.pink,
   pinkDim: THEME.pinkDim,
   pinkBorder: THEME.pinkBorder,
   pinkText60: pinkAlpha(0.6),
-  pinkText50: pinkAlpha(0.5),
   pinkText70: pinkAlpha(0.7),
-  textMuted: whiteAlpha(0.38),
+  textMuted: whiteAlpha(0.47),
 } as const
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -150,7 +165,7 @@ const StatusRegion: React.FC<{
       return (
         <div>
           <Filename name={state.filename} />
-          <div style={{ fontSize: 9, color: COLORS.pinkText50, letterSpacing: '0.06em' }}>
+          <div style={{ fontSize: 9, color: COLORS.pinkText60, letterSpacing: '0.06em' }}>
             {formatPartialMessage(state)}
           </div>
         </div>
@@ -332,7 +347,18 @@ export const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         onClick={openFileDialog}
-        onKeyDown={(e) => e.key === 'Enter' && openFileDialog()}
+        onKeyDown={(e) => {
+          // WAI-ARIA APG for custom button roles: Space is as much an
+          // activation key as Enter (2026-08-28 sprint — this only
+          // handled Enter before). preventDefault on Space specifically
+          // matters: without it, a focused custom "button" div lets Space
+          // fall through to its default browser behavior, scrolling the
+          // page, instead of opening the file dialog.
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            openFileDialog()
+          }
+        }}
         style={{
           border: `1px dashed ${isDragging ? COLORS.pink : COLORS.pinkBorder}`,
           borderRadius: 8,
@@ -354,13 +380,21 @@ export const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
           onChange={handleInputChange}
         />
 
-        <StatusRegion
-          state={state}
-          onConfirmOffer={onConfirmOffer}
-          onDismissOffer={onDismissOffer}
-          onRetry={onRetry}
-          onCancel={onCancel}
-        />
+        {/* role="status" (2026-08-28 sprint) — announces upload
+            success/failure/offer-confirmation and stream disconnect/
+            reconnect to screen-reader users, who otherwise get no signal
+            at all when this region's content changes. Implies
+            aria-live="polite"/aria-atomic="true" per the ARIA spec;
+            stated explicitly too for older AT compatibility. */}
+        <div role="status" aria-live="polite">
+          <StatusRegion
+            state={state}
+            onConfirmOffer={onConfirmOffer}
+            onDismissOffer={onDismissOffer}
+            onRetry={onRetry}
+            onCancel={onCancel}
+          />
+        </div>
       </div>
     </div>
   )

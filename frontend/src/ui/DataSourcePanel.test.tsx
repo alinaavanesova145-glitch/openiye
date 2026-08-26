@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { createEvent, fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { DataSourceState, EncodingSummary } from '@canvas/upload/dataSourceState'
 import { DataSourcePanel } from './DataSourcePanel'
@@ -291,6 +291,66 @@ describe('DataSourcePanel', () => {
       expect(onDismissOffer).toHaveBeenCalledOnce()
       expect(onFile).not.toHaveBeenCalled()
     })
+  })
+
+  // NEW 2026-08-28 — the custom role="button" drop zone only handled
+  // Enter before, not Space (the natural activation key for a button per
+  // WAI-ARIA APG), and never called preventDefault — a keyboard user
+  // pressing Space got an unexpected page scroll instead of the file
+  // dialog opening.
+  describe('keyboard activation', () => {
+    // clickSpy asserts "at least once," not an exact count: the hidden
+    // <input> is a DOM child of the drop zone div, so input.click()'s own
+    // bubbling 'click' event reaches the drop zone's pre-existing
+    // onClick={openFileDialog} too (unrelated to this fix — the same
+    // nested-input-inside-a-clickable-wrapper structure predates this
+    // sprint), which can invoke it more than once in jsdom. What matters
+    // here is that the key actually opens the dialog at all, which it
+    // didn't for Space before this fix.
+    it('Space opens the file dialog and prevents the default page scroll', () => {
+      render(<DataSourcePanel state={{ status: 'idle' }} onFile={vi.fn()} />)
+      const dropZone = document.getElementById('iye-file-drop-zone') as HTMLElement
+      const input = document.getElementById('iye-file-input') as HTMLInputElement
+      const clickSpy = vi.spyOn(input, 'click')
+
+      const event = createEvent.keyDown(dropZone, { key: ' ' })
+      const preventDefaultSpy = vi.spyOn(event, 'preventDefault')
+      fireEvent(dropZone, event)
+
+      expect(clickSpy).toHaveBeenCalled()
+      expect(preventDefaultSpy).toHaveBeenCalledOnce()
+    })
+
+    it('Enter still opens the file dialog too', () => {
+      render(<DataSourcePanel state={{ status: 'idle' }} onFile={vi.fn()} />)
+      const dropZone = document.getElementById('iye-file-drop-zone') as HTMLElement
+      const input = document.getElementById('iye-file-input') as HTMLInputElement
+      const clickSpy = vi.spyOn(input, 'click')
+
+      fireEvent.keyDown(dropZone, { key: 'Enter' })
+
+      expect(clickSpy).toHaveBeenCalled()
+    })
+
+    it('neither key does anything while a request is already in flight (parsing)', () => {
+      render(<DataSourcePanel state={{ status: 'parsing', filename: 'a.csv' }} onFile={vi.fn()} />)
+      const dropZone = document.getElementById('iye-file-drop-zone') as HTMLElement
+      const input = document.getElementById('iye-file-input') as HTMLInputElement
+      const clickSpy = vi.spyOn(input, 'click')
+
+      fireEvent.keyDown(dropZone, { key: ' ' })
+      fireEvent.keyDown(dropZone, { key: 'Enter' })
+
+      expect(clickSpy).not.toHaveBeenCalled()
+    })
+  })
+
+  // NEW 2026-08-28 — the status region had no aria-live/role="status"
+  // anywhere, so a screen-reader user got no announcement when an upload
+  // succeeded/failed/asked for confirmation.
+  it('the status region is a live region (role="status") for every state', () => {
+    render(<DataSourcePanel state={{ status: 'idle' }} onFile={vi.fn()} />)
+    expect(screen.getByRole('status')).toBeInTheDocument()
   })
 
   it('never renders magenta anywhere in the panel, for any state', () => {

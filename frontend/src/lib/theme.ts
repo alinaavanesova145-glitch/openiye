@@ -52,6 +52,68 @@ export function whiteAlpha(alpha: number): string {
   return `rgba(${WHITE_RGB}, ${alpha})`
 }
 
+// ─── WCAG contrast (2026-08-28 sprint) ─────────────────────────────────────
+// Two text colors (DataSourcePanel's old pinkText50, DiagnosticSidebar's
+// and DataSourcePanel's old textMuted) turned out to measure under WCAG
+// AA's 4.5:1 normal-text floor against this theme's #0a0a0d background —
+// found by an audit, not eyeballed, and fixed the same way: a real
+// relative-luminance calculation, not a guess. Exported so
+// theme.contrast.test.ts can check the actual token values every UI
+// surface uses, not a hand-copied duplicate number that could drift from
+// what's really in use.
+
+type RGB = readonly [number, number, number]
+
+function srgbToLinear(c: number): number {
+  const v = c / 255
+  return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4
+}
+
+function relativeLuminance([r, g, b]: RGB): number {
+  return 0.2126 * srgbToLinear(r) + 0.7152 * srgbToLinear(g) + 0.0722 * srgbToLinear(b)
+}
+
+/** Parses `#rrggbb` or `rgba(r, g, b, a)` (the only two shapes this module
+ *  ever produces) into an [r,g,b,a] tuple. Throws on anything else — a
+ *  contrast check on a color shape this module doesn't produce is a bug in
+ *  the caller, not something to silently approximate. */
+function parseColor(color: string): readonly [number, number, number, number] {
+  const hexMatch = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(color)
+  if (hexMatch) {
+    return [parseInt(hexMatch[1], 16), parseInt(hexMatch[2], 16), parseInt(hexMatch[3], 16), 1]
+  }
+  const rgbaMatch = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)$/i.exec(color)
+  if (rgbaMatch) {
+    return [
+      Number(rgbaMatch[1]),
+      Number(rgbaMatch[2]),
+      Number(rgbaMatch[3]),
+      rgbaMatch[4] === undefined ? 1 : Number(rgbaMatch[4]),
+    ]
+  }
+  throw new Error(`contrastRatio: unrecognized color format "${color}"`)
+}
+
+/** Alpha-composites `fg` over the OPAQUE `bg`, then returns the WCAG 2.x
+ *  contrast ratio between the result and `bg` — the real check for "is
+ *  this legible," not a guess. `bg` must itself be fully opaque (every
+ *  background this theme defines is). */
+export function contrastRatio(fg: string, bg: string): number {
+  const [br, bg_, bb, ba] = parseColor(bg)
+  if (ba !== 1) throw new Error('contrastRatio: bg must be fully opaque')
+  const [fr, fgc, fb, fa] = parseColor(fg)
+  const composited: RGB = [
+    fa * fr + (1 - fa) * br,
+    fa * fgc + (1 - fa) * bg_,
+    fa * fb + (1 - fa) * bb,
+  ]
+  const l1 = relativeLuminance(composited)
+  const l2 = relativeLuminance([br, bg_, bb])
+  const lighter = Math.max(l1, l2)
+  const darker = Math.min(l1, l2)
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
 export const THEME = {
   bg: BG,
   bgRaised: BG_RAISED,
