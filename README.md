@@ -69,8 +69,13 @@ PYTHONPATH=./backend backend/.venv/bin/uvicorn app.api.main:app --host 127.0.0.1
 cd frontend && npm run dev
 ```
 
-Requires `backend/.venv` already set up (`pip install -e backend -e sdk` or
-equivalent) and `frontend/node_modules` installed (`npm install`).
+Requires `backend/.venv` already set up (`pip install -r
+backend/requirements.lock.txt && pip install --no-deps -e backend -e sdk`
+— the lock file pins every dependency, including dev-only ones like
+`pytest`/`ruff`, at an exact version; regenerate it after changing
+`backend/pyproject.toml` with `pip-compile --extra dev --output-file
+requirements.lock.txt pyproject.toml`, run from `backend/`) and
+`frontend/node_modules` installed (`npm install`).
 
 Run `./boot.sh`, open `http://localhost:3000/app.html` (the operational
 canvas app — `http://localhost:3000` itself serves the public marketing

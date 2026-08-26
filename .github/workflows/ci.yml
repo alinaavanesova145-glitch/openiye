@@ -23,8 +23,16 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Install backend + sdk (editable, dev extra pulls in pytest/websockets)
-        run: pip install -e "backend[dev]" -e sdk
+      # backend/requirements.lock.txt (pip-compile, 2026-08-27 sprint) pins
+      # every backend dependency -- including transitive ones -- exactly.
+      # Install from it first, then register backend/sdk as editable with
+      # --no-deps so pip doesn't re-resolve their (deliberately >=-ranged)
+      # install_requires against a fresh index and reintroduce the same
+      # unpinned-version drift this file exists to prevent.
+      - name: Install pinned dependencies, then backend + sdk (editable, --no-deps)
+        run: |
+          pip install -r backend/requirements.lock.txt
+          pip install --no-deps -e backend -e sdk
 
       - name: pytest
         run: cd backend && python -m pytest tests/ -q
