@@ -8,6 +8,16 @@ Requires-Dist: fastapi>=0.110.0
 Requires-Dist: uvicorn[standard]>=0.28.0
 Requires-Dist: pydantic>=2.6.0
 Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: numpy>=1.26.0
+Requires-Dist: scipy>=1.12.0
+Requires-Dist: umap-learn>=0.5.5
+Requires-Dist: hdbscan>=0.8.33
+Requires-Dist: requests>=2.31.0
+Requires-Dist: httpx>=0.27.0
+Provides-Extra: dev
+Requires-Dist: ruff>=0.4.0; extra == "dev"
+Requires-Dist: websockets>=12.0; extra == "dev"
+Requires-Dist: pytest>=8.0.0; extra == "dev"
 
 # FastAPI backend for IYE
 

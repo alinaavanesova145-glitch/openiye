@@ -23,8 +23,8 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Install backend + sdk (editable, matches local ./venv setup)
-        run: pip install -e backend -e sdk
+      - name: Install backend + sdk (editable, dev extra pulls in pytest/websockets)
+        run: pip install -e "backend[dev]" -e sdk
 
       - name: pytest
         run: cd backend && python -m pytest tests/ -q
