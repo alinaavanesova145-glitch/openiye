@@ -8,12 +8,17 @@
  */
 
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
+import type { MutableRefObject } from 'react'
 import {
   useVectorStream,
   DEFAULT_TEMPORAL_METRICS,
   type VectorFrame,
   type StreamState,
   type StreamConfig,
+  type TemporalMetrics,
+  type VectorCoordinate3D,
+  type FeatureAttribution,
+  type NarrativeHistoryEntry,
 } from './useVectorStream'
 import { parseFile, detectFormat, MAX_UPLOAD_BYTES, type EncodingSummary } from '@canvas/upload/parseMatrix'
 import { API_BASE } from '@lib/apiConfig'
@@ -149,12 +154,46 @@ export interface VectorDiagnosticsResult {
   dataSourceState: DataSourceState
   /** Ollama availability, per the backend's own startup healthcheck. */
   llmStatus: LlmStatus
+  /** Flattened [x,y,z,...] positions for `activeFrame` — live or REST,
+   *  whichever `activeFrame` currently resolves to. The single source
+   *  VectorViewport renders from; see the module docstring. */
+  activePositions: Float32Array
+  /** `activeFrame.anomaly_indices`, or [] before any frame exists. */
+  activeAnomalyIndices: number[]
+  /** `activeFrame.cluster_labels`, or [] before any frame exists. */
+  activeClusterLabels: number[]
+  /** `activeFrame.point_z_scores`, or [] before any frame exists. */
+  activePointZScores: VectorCoordinate3D[]
+  /** `activeFrame.point_feature_attributions`, or [] before any frame exists. */
+  activePointFeatureAttributions: FeatureAttribution[][]
+  /** Latest temporal metrics ref, passed through from useVectorStream — see
+   *  that hook's own doc comment for why this is a ref, not state. Only
+   *  ever mutated by the live WS path; a REST-only session simply never
+   *  advances past DEFAULT_TEMPORAL_METRICS, which is the correct "no
+   *  live temporal signal exists for this" reading. */
+  temporalRef: MutableRefObject<TemporalMetrics>
+  /** Narrative texts that arrived after the frame they explained was
+   *  already replaced — passed through from useVectorStream. */
+  narrativeHistory: NarrativeHistoryEntry[]
 }
+
+const EMPTY_POSITIONS = new Float32Array(0)
+const EMPTY_NUMBER_ARRAY: number[] = []
+const EMPTY_Z_SCORE_ARRAY: VectorCoordinate3D[] = []
+const EMPTY_FEATURE_ATTRIBUTIONS_ARRAY: FeatureAttribution[][] = []
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useVectorDiagnostics(): VectorDiagnosticsResult {
-  const { streamState, liveFrame, configureStream } = useVectorStream()
+  // The single useVectorStream() instance for the whole app (2026-08-28
+  // sprint) — previously VectorViewport also called this hook directly,
+  // opening a second independent WebSocket connection per tab and leaving
+  // the canvas with no way to ever see a REST-uploaded frame at all (see
+  // docs/idealization_report.md for the full writeup). Everything the
+  // canvas needs — positions, temporalRef, narrativeHistory — now flows
+  // out of this hook instead.
+  const { streamState, liveFrame, configureStream, positions: streamPositions, temporalRef, narrativeHistory } =
+    useVectorStream()
 
   const [restFrame, setRestFrame] = useState<VectorFrame | null>(null)
   const [dataSourceState, setDataSourceState] = useState<DataSourceState>(IDLE_DATA_SOURCE_STATE)
@@ -394,6 +433,37 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
     [isLive, liveFrame, restFrame],
   )
 
+  // ── Canvas-facing derived data ───────────────────────────────────────────
+  // Everything VectorViewport renders, resolved from activeFrame so the
+  // canvas always shows whatever the rest of the app is showing — live or
+  // uploaded. Only `positions` needs the isLive branch: VectorFrame carries
+  // coordinates as {x,y,z}[], not a flat Float32Array, and useVectorStream's
+  // own `positions` is already reference-stable across unchanged live
+  // frames (see that hook's "Referential stability" section) — recomputing
+  // it here from liveFrame.coordinates on every frame message would defeat
+  // that. cluster_labels/anomaly_indices/point_z_scores/
+  // point_feature_attributions don't have that problem: they're plain
+  // fields already embedded (and already stable, live-side) on VectorFrame
+  // itself, live or REST, so reading them straight off activeFrame is both
+  // correct and doesn't cost anything extra.
+  const restPositions = useMemo<Float32Array>(() => {
+    if (!restFrame || restFrame.coordinates.length === 0) return EMPTY_POSITIONS
+    const arr = new Float32Array(restFrame.coordinates.length * 3)
+    restFrame.coordinates.forEach((c: VectorCoordinate3D, i: number) => {
+      arr[i * 3] = c.x
+      arr[i * 3 + 1] = c.y
+      arr[i * 3 + 2] = c.z
+    })
+    return arr
+  }, [restFrame])
+
+  const activePositions = isLive ? streamPositions : restPositions
+  const activeAnomalyIndices = activeFrame?.anomaly_indices ?? EMPTY_NUMBER_ARRAY
+  const activeClusterLabels = activeFrame?.cluster_labels ?? EMPTY_NUMBER_ARRAY
+  const activePointZScores = activeFrame?.point_z_scores ?? EMPTY_Z_SCORE_ARRAY
+  const activePointFeatureAttributions =
+    activeFrame?.point_feature_attributions ?? EMPTY_FEATURE_ATTRIBUTIONS_ARRAY
+
   return {
     activeFrame,
     streamState,
@@ -406,6 +476,13 @@ export function useVectorDiagnostics(): VectorDiagnosticsResult {
     restFrame,
     dataSourceState,
     llmStatus,
+    activePositions,
+    activeAnomalyIndices,
+    activeClusterLabels,
+    activePointZScores,
+    activePointFeatureAttributions,
+    temporalRef,
+    narrativeHistory,
   }
 }
 

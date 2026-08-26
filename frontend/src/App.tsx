@@ -5,6 +5,7 @@ import { DataSourcePanel } from '@/ui/DataSourcePanel'
 import { IS_PUBLIC_HOST } from '@lib/apiConfig'
 import { THEME, pinkAlpha } from '@lib/theme'
 import type { StreamState } from '@canvas/math/useVectorStream'
+import type { VectorViewportProps } from '@canvas/VectorViewport'
 
 // Lazy-loaded so the shell (sidebar, terminal panel, layout) paints before
 // the three.js/@react-three 3D engine — the vast majority of the bundle —
@@ -141,7 +142,7 @@ export const PublicHostNotice: React.FC = () => (
   </div>
 )
 
-const ViewportPanel: React.FC<{ streamState: StreamState }> = ({ streamState }) => (
+const ViewportPanel: React.FC<VectorViewportProps> = (viewportProps) => (
   <div
     style={{
       flex: 1,
@@ -152,7 +153,7 @@ const ViewportPanel: React.FC<{ streamState: StreamState }> = ({ streamState }) 
     }}
   >
     <Suspense fallback={<ViewportFallback />}>
-      <VectorViewport />
+      <VectorViewport {...viewportProps} />
     </Suspense>
 
     {/* Minimal top-left label */}
@@ -176,7 +177,7 @@ const ViewportPanel: React.FC<{ streamState: StreamState }> = ({ streamState }) 
       </span>
     </div>
 
-    {shouldShowPublicHostNotice(IS_PUBLIC_HOST, streamState) && <PublicHostNotice />}
+    {shouldShowPublicHostNotice(IS_PUBLIC_HOST, viewportProps.streamState) && <PublicHostNotice />}
   </div>
 )
 
@@ -221,6 +222,13 @@ const App: React.FC = () => {
     isLive,
     dataSourceState,
     llmStatus,
+    activePositions,
+    activeAnomalyIndices,
+    activeClusterLabels,
+    activePointZScores,
+    activePointFeatureAttributions,
+    temporalRef,
+    narrativeHistory,
   } = useVectorDiagnostics()
 
   const handleFile = useCallback(
@@ -253,7 +261,17 @@ const App: React.FC = () => {
         }}
       >
         {/* Left: 3D Vector Viewport (70%) */}
-        <ViewportPanel streamState={streamState} />
+        <ViewportPanel
+          streamState={streamState}
+          activeFrame={activeFrame}
+          positions={activePositions}
+          anomalyIndices={activeAnomalyIndices}
+          clusterLabels={activeClusterLabels}
+          pointZScores={activePointZScores}
+          pointFeatureAttributions={activePointFeatureAttributions}
+          temporalRef={temporalRef}
+          narrativeHistory={narrativeHistory}
+        />
 
         {/* Right: Diagnostic Sidebar (30%, clamped 320-480px) */}
         <div

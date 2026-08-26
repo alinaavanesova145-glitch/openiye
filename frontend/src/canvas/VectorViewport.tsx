@@ -4,8 +4,15 @@ import * as THREE from 'three'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { OrbitControls, Line, Html } from '@react-three/drei'
 import { ConvexGeometry } from 'three/examples/jsm/geometries/ConvexGeometry.js'
-import { useVectorStream, DEFAULT_TEMPORAL_METRICS, HOT_REGIMES } from './math/useVectorStream'
-import type { FeatureAttribution, TemporalMetrics, VectorCoordinate3D } from './math/useVectorStream'
+import { DEFAULT_TEMPORAL_METRICS, HOT_REGIMES } from './math/useVectorStream'
+import type {
+  FeatureAttribution,
+  TemporalMetrics,
+  VectorCoordinate3D,
+  VectorFrame,
+  StreamState,
+  NarrativeHistoryEntry,
+} from './math/useVectorStream'
 import { useAnomalyExplain } from './math/useAnomalyExplain'
 import type { AnomalyExplainState, ExplainablePoint } from './math/useAnomalyExplain'
 import { THEME } from '@lib/theme'
@@ -29,8 +36,6 @@ const COLORS = {
 } as const
 
 const BOUNDS_HALF_EXTENT = 2 // matches ViewportWireframe's boxGeometry args [4, 4, 4]
-
-const EMPTY_NUMBER_ARRAY: number[] = []
 
 // Beacon pulse ranges — escalating anomalies pulse faster and harder, decaying ones settle.
 export const BASE_PULSE_HZ = 1.0
@@ -692,40 +697,66 @@ export function PointNarrativePanel({ explainState, dismiss }: PointNarrativePan
 const EMPTY_Z_SCORE_ARRAY: VectorCoordinate3D[] = []
 const EMPTY_FEATURE_ATTRIBUTIONS_ARRAY: FeatureAttribution[][] = []
 
-export default function VectorViewport() {
-  const { positions, anomalyIndices, streamState, liveFrame, temporalRef, narrativeHistory } =
-    useVectorStream()
+export interface VectorViewportProps {
+  /** Current WebSocket connection state — drives the "STREAM: …" HUD label. */
+  streamState: StreamState
+  /** The frame actually being displayed — live or REST-uploaded, whichever
+   *  useVectorDiagnostics's activeFrame currently resolves to. Everything
+   *  below (positions, anomalyIndices, …) is derived from this same frame
+   *  upstream in useVectorDiagnostics; passed through pre-derived rather
+   *  than recomputed here so the referential-stability guarantees on the
+   *  live path (see useVectorStream) survive the trip. */
+  activeFrame: VectorFrame | null
+  positions: Float32Array
+  anomalyIndices: number[]
+  clusterLabels: number[]
+  pointZScores: VectorCoordinate3D[]
+  pointFeatureAttributions: FeatureAttribution[][]
+  temporalRef: MutableRefObject<TemporalMetrics>
+  narrativeHistory: NarrativeHistoryEntry[]
+}
+
+export default function VectorViewport({
+  streamState,
+  activeFrame,
+  positions,
+  anomalyIndices,
+  clusterLabels,
+  pointZScores,
+  pointFeatureAttributions,
+  temporalRef,
+  narrativeHistory,
+}: VectorViewportProps) {
   const [mockFrame] = useState(buildMockFrame)
   const { explainState, explainPoint, dismiss } = useAnomalyExplain()
 
-  const hasLiveData = positions.length > 0
-  const activePositions = hasLiveData ? positions : mockFrame.positions
-  const activeAnomalyIndices = hasLiveData ? anomalyIndices : mockFrame.anomalyIndices
-  const activeClusterLabels = hasLiveData
-    ? (liveFrame?.cluster_labels ?? EMPTY_NUMBER_ARRAY)
-    : mockFrame.clusterLabels
-  const activePointZScores = hasLiveData ? (liveFrame?.point_z_scores ?? EMPTY_Z_SCORE_ARRAY) : EMPTY_Z_SCORE_ARRAY
-  const activePointFeatureAttributions = hasLiveData
-    ? (liveFrame?.point_feature_attributions ?? EMPTY_FEATURE_ATTRIBUTIONS_ARRAY)
+  const hasRealData = positions.length > 0
+  const activePositions = hasRealData ? positions : mockFrame.positions
+  const activeAnomalyIndices = hasRealData ? anomalyIndices : mockFrame.anomalyIndices
+  const activeClusterLabels = hasRealData ? clusterLabels : mockFrame.clusterLabels
+  const activePointZScores = hasRealData ? pointZScores : EMPTY_Z_SCORE_ARRAY
+  const activePointFeatureAttributions = hasRealData
+    ? pointFeatureAttributions
     : EMPTY_FEATURE_ATTRIBUTIONS_ARRAY
 
   const pointCount = activePositions.length / 3
-  const regime = liveFrame?.temporal.regime ?? DEFAULT_TEMPORAL_METRICS.regime
+  const regime = activeFrame?.temporal.regime ?? DEFAULT_TEMPORAL_METRICS.regime
   const regimeColor = HOT_REGIMES.has(regime) ? COLORS.anomaly : COLORS.pink
 
   const selectedPointIndex = explainState.status === 'idle' ? null : explainState.pointIndex
 
-  // Keyed on liveFrame's identity (which only changes when a new frame message
-  // or a matching narrative arrives) so AnomalyBeacon's memo isn't defeated by
-  // a fresh tooltipInfo object on every unrelated VectorViewport render.
+  // Keyed on activeFrame's identity (which only changes when a new frame
+  // message, a matching narrative, or a new upload arrives) so
+  // AnomalyBeacon's memo isn't defeated by a fresh tooltipInfo object on
+  // every unrelated VectorViewport render.
   const tooltipInfo = useMemo<BeaconTooltipInfo>(
     () => ({
-      temporal: liveFrame?.temporal ?? DEFAULT_TEMPORAL_METRICS,
-      explanation: liveFrame?.explanation ?? null,
-      status: liveFrame?.status ?? 'NOMINAL',
-      axesAreRawFeatures: liveFrame?.axes_are_raw_features ?? true,
+      temporal: activeFrame?.temporal ?? DEFAULT_TEMPORAL_METRICS,
+      explanation: activeFrame?.explanation ?? null,
+      status: activeFrame?.status ?? 'NOMINAL',
+      axesAreRawFeatures: activeFrame?.axes_are_raw_features ?? true,
     }),
-    [liveFrame],
+    [activeFrame],
   )
 
   return (
@@ -769,7 +800,7 @@ export default function VectorViewport() {
         <OrbitControls enableZoom={true} makeDefault />
       </Canvas>
 
-      {liveFrame && (
+      {activeFrame && (
         <div className="tactical-terminal-card">
           <div className="status-header">
             <span>AI CORE ANALYSIS</span>
@@ -777,9 +808,9 @@ export default function VectorViewport() {
               {regime}
             </span>
           </div>
-          {resolveExplanationDisplay(liveFrame.status, liveFrame.explanation) !== null && (
+          {resolveExplanationDisplay(activeFrame.status, activeFrame.explanation) !== null && (
             <p className="explanation-text">
-              {resolveExplanationDisplay(liveFrame.status, liveFrame.explanation)}
+              {resolveExplanationDisplay(activeFrame.status, activeFrame.explanation)}
             </p>
           )}
           {/* Narratives whose frame was already replaced by the time they arrived —
