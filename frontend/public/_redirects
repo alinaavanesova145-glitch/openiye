@@ -1,19 +1,27 @@
-# Cloudflare Pages routing rule.
+# Cloudflare Pages routing.
 #
 # Restructured 2026-08-27 (see docs/idealization_report.md, 2026-08-26 and
-# 2026-08-27 sprints). The Vite build now emits dist/index.html (the public
+# 2026-08-27 sprints). The Vite build emits dist/index.html (the public
 # marketing landing page, physically at the build root) and dist/app.html
 # (the operational 3D canvas app — requires a LAN-local backend, never
 # meant to be what a public domain root serves).
 #
-# Root ("/") needs no rule here: it's served directly from the literal
-# index.html Cloudflare Pages always treats as the implicit root document
-# — no redirect involved. This one rule gives the operational app a clean
-# extension-less URL (/app) matching how Cloudflare's own HTML-file
-# canonicalization already wants to present it, rather than fighting that
-# behavior the way the old `/ -> /landing.html` rewrite did (that rewrite's
-# 200 response was itself re-canonicalized into a visible 308 to /landing
-# — root-caused in the 2026-08-26 sprint entry; this restructure is that
-# fix). Confirmed live post-deploy: see the 2026-08-27 sprint entry for the
-# actual curl-verified redirect/status-code results.
-/app /app.html 200
+# No rule needed here, deliberately — confirmed empirically, not assumed:
+#   - "/"        -> served directly from the literal root index.html, 200,
+#                   no redirect.
+#   - "/app"     -> Cloudflare Pages' default clean-URL asset resolution
+#                   serves app.html's content directly, 200, no redirect
+#                   or rule required.
+#   - "/app.html"/"/index.html" (direct .html requests) -> Cloudflare's
+#                   built-in HTML canonicalization 308s these to /app and
+#                   / respectively. Harmless, single-hop.
+#
+# An earlier version of this file had an explicit `/app /app.html 200`
+# rewrite rule, reasoning it would give /app a clean URL. It didn't —
+# routing that request through the rewrite engine made Cloudflare's
+# canonicalizer redirect /app to /app (itself), an infinite loop (curl
+# --max-redirs confirmed it, both locally via `wrangler pages dev dist`
+# and live). Reproduced, root-caused, and reverted in the same sprint
+# that introduced it; see the 2026-08-27 entry for the full story. Do not
+# re-add a rewrite rule for /app without re-verifying against this exact
+# failure mode.
