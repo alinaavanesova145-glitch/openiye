@@ -3152,3 +3152,206 @@ confirmed in Phase 0). This entry itself is being amended in a follow-up
 commit after `23df000`, once the resulting CI run was confirmed green —
 the version of this section committed as part of `9890a30` predated that
 confirmation and should be read as superseded by this one.
+
+# 2026-08-27 — Sprint: fix the redirect-chain, close the backend lockfile gap
+
+Single stated goal: the one real defect the 2026-08-26 sprint identified,
+root-caused, and deliberately left for its own sprint — the operational
+3D app was physically unreachable on the live public deployment because
+Cloudflare Pages' built-in HTML canonicalization redirected both `/` and
+`/index.html` to `/landing`. Independently re-verified before starting
+(not taken on faith from the prior entry): fetched `openiye.pages.dev/`
+and `/index.html` directly and confirmed both actually served landing
+content, and confirmed the 2026-08-26 CI run was genuinely green by
+checking both jobs' conclusions on their specific run id.
+
+## Phase 1 — restructure: landing.html becomes the literal build-root index.html
+
+The prior sprint had already identified the only reliable fix: Cloudflare
+canonicalizes any request resolving to an `.html` file to its
+extension-less path, and does this *after* `_redirects` rules run on
+their own output — so no rewrite rule can outrun it. The fix has to be
+structural: make the file Cloudflare treats as the implicit root document
+*already be* the landing page, so there's nothing left to canonicalize
+away from.
+
+Renamed via `git mv`: the operational app's `index.html` → `app.html`,
+`landing.html` → `index.html`. Updated every reference this broke:
+`vite.config.ts`'s `rollupOptions.input` (and its now-stale comment),
+`App.tsx`'s "see the live interactive demo instead" link (`/landing.html`
+→ `/`, since the landing page is now root), the matching assertion in
+`App.test.tsx`, `wrangler.toml`'s comment block (rewritten — it still
+said "PLACEHOLDER, no real Cloudflare account" a month after the account,
+project, and live deploy all became real), and `README.md`'s local-dev
+instructions. That last one mattered more than expected: confirmed
+empirically (started `vite` locally, curled both paths) that `npm run
+dev`'s `localhost:3000` now serves the *landing page*, not the
+operational app — the operational app moved to `localhost:3000/app.html`
+in dev too, not just in the production build. Updated `README.md`
+accordingly rather than leaving it silently wrong for the next person who
+runs `./boot.sh` expecting the canvas app at the root URL.
+
+`frontend/public/_redirects` was rewritten to describe the new structure,
+initially with an explicit `/app /app.html 200` rewrite rule to give the
+operational app a clean extension-less URL. Full gate from scratch (`rm
+-rf node_modules && npm ci`, `tsc`, `eslint`, `vitest` — 184/184, `npm run
+build`) passed, and the resulting CI run (`33000874315`, commit
+`979de20`) was confirmed green on both jobs via the run id directly.
+Commit `979de20`.
+
+## Phase 2 — mandatory live re-check caught a real bug the gate couldn't
+
+This is exactly the step the sprint's own instructions called "the most
+important" and warned not to skip: re-testing the live public URL, not
+trusting a green build. It caught something real. `curl -sD -
+https://openiye.pages.dev/app` returned `308` with `Location: /app` —
+redirecting to itself. `curl -L --max-redirs 5` confirmed it: an actual
+infinite redirect loop, not a one-off.
+
+Root-caused rather than patched around: reproduced locally with `npx
+wrangler pages dev dist` against the real production build. Routing the
+`/app` request through `_redirects`' rewrite engine at all is what
+triggers it — Cloudflare's canonicalizer sees the rewrite resolves to
+`app.html`, computes its canonical path (`/app`), and redirects there
+regardless of whether that's already the requested URL. Since it was, the
+redirect target equals the redirect source: an unconditional loop, not a
+false-positive parser quirk (the old `_redirects` file's comment,
+inherited unedited from the 2026-08-01 sprint, had actually warned about
+a *different*, unrelated false-positive-loop-detection GitHub issue —
+this bug is real, not that one).
+
+Tested the fix locally before redeploying: with the `/app` rewrite rule
+removed entirely, `wrangler pages dev` showed `/app` resolving to
+`app.html`'s content directly at `200`, no rule needed — Cloudflare
+Pages' default clean-URL asset resolution already does this, the same
+implicit mechanism that serves `index.html` at `/`. `/app.html` and
+`/index.html` (direct `.html` requests) still canonicalize cleanly,
+single-hop, to `/app` and `/` respectively. Removed the rule, rebuilt,
+reran the full gate, pushed. CI run `33001423365` (commit `f43893f`)
+confirmed green on both jobs. Commit `f43893f`.
+
+**Live re-verification after the fix**, via `curl -sD -` (headers, not
+just page text — status code and `Location` explicitly checked):
+
+| Request | Result |
+|---|---|
+| `GET /` | `200`, no redirect, title "IYE — Drop a messy file, get an explained 3D anomaly map" |
+| `GET /app` | `200`, no redirect, title "IYE - DeepTech Canvas" |
+| `GET /app.html` | `308` → `/app`, single hop |
+| `GET /index.html` | `308` → `/`, single hop |
+| `/app`'s JS assets (`app-*.js`, `VectorViewport-*.js`, `vendor-3d-*.js`, `theme-*.js`) | all `200` |
+| `og:image`/`twitter:image` (still `https://openiye.pages.dev/og-image.png`) | meta tags intact, file `200` — unaffected by the rename |
+
+**What's confirmed vs. inferred about `PublicHostNotice` specifically**:
+`/app` serves the operational app's real HTML/JS, and `@lib/apiConfig`'s
+`IS_PUBLIC_HOST` detection (unit-tested, and its own docstring literally
+names `openiye.pages.dev` as the reference public host) will correctly
+flag this domain and drive `shouldShowPublicHostNotice` true whenever
+unconnected — confirmed by code inspection and existing unit tests, not
+guessed. What's *not* confirmed: actually seeing the notice rendered in a
+real browser DOM. No browser automation tool is available in this
+environment — same honest boundary every prior sprint's report has
+noted. The mechanism reaching a reachable URL is new and confirmed; a
+human clicking through in an actual browser is the one remaining check
+this report can't perform itself.
+
+## Phase 3 — backend dependency pinning (pip-compile lockfile)
+
+Lower priority per this sprint's own instructions ("if time remains"),
+done anyway since the 2026-08-26 sprint had already found the concrete
+cost of skipping it: `backend/pyproject.toml`'s `>=`-only ranges meant
+`pytest` itself went undeclared and invisible until a fresh CI install
+exposed it. Chose `pip-tools` over `uv`: it pins into the existing
+pip/venv workflow this repo already documents (`backend/.venv`) rather
+than introducing a second package manager and install flow.
+
+Added `pip-tools` to the `dev` extra, ran `pip-compile --extra dev
+--output-file requirements.lock.txt pyproject.toml` from `backend/`,
+producing `backend/requirements.lock.txt` (144 lines) pinning every
+backend dependency — direct and transitive — to an exact version. `sdk/`
+has its own `setup.py` `install_requires` (numpy/scipy/umap-learn/
+hdbscan/requests/pydantic) with no lockfile of its own; verified it's a
+strict subset of backend's dependency set, so installing from backend's
+lock file already satisfies it. CI now does `pip install -r
+backend/requirements.lock.txt` then `pip install --no-deps -e backend -e
+sdk` — `--no-deps` deliberately, so pip never re-resolves either
+package's own `>=`-ranged `install_requires` against a live index and
+silently reintroduces the exact drift this lockfile exists to prevent.
+
+Verified in a fully fresh `python3.9` venv (not the working `.venv`):
+lock install → `--no-deps` editable installs → `pytest tests/ -q` → 124
+passed. Pushed; CI run `33002689329` (commit `08cb907`) confirmed green
+on both jobs via the run id. Commit `08cb907`.
+
+## Full verification, this sprint's final state
+
+| Check | Result |
+|---|---|
+| `rm -rf node_modules && npm ci` (clean, from scratch) | clean, 0 vulnerabilities |
+| `tsc --noEmit` | clean |
+| `eslint . --max-warnings 0` | clean |
+| `vitest run` | 184 passed (184) |
+| `npm run build` | clean — `dist/index.html` (landing), `dist/app.html` (operational app), `dist/_redirects`, `dist/og-image.png` all present |
+| fresh-venv lock install → pytest (backend) | 124 passed (124) |
+| `npm audit` | 0 vulnerabilities |
+| CI, three separate runs this sprint (`33000874315`, `33001423365`, `33002689329`) | all green, both jobs, confirmed by run id |
+| live `curl -sD -` smoke test | see Phase 2's table — `/` and `/app` both `200` with no redirect, `/app.html`/`/index.html` single-hop `308`s, no loop |
+
+## Files touched this sprint
+
+**Created**: `frontend/app.html` (renamed from `frontend/index.html`),
+`backend/requirements.lock.txt`.
+
+**Modified**: `frontend/index.html` (renamed from `frontend/landing.html`,
+content unchanged), `frontend/vite.config.ts`, `frontend/public/_redirects`
+(rewritten twice — see Phase 2), `frontend/wrangler.toml`,
+`frontend/src/App.tsx`, `frontend/src/App.test.tsx`, `README.md`,
+`backend/pyproject.toml` (`+pip-tools` in `dev`),
+`backend/iye_backend.egg-info/*` (regenerated), `.github/workflows/ci.yml`
+(pinned-install backend step).
+
+**Deleted**: `frontend/landing.html` (became `index.html`).
+
+## Remaining known gaps (deliberately not touched, and why)
+
+1. **`docs/gtm_deployment_brief.md` and `docs/free_tier_launch_steps.md`
+   still reference the old `landing.html`/`index.html` filenames in
+   prose.** Both are already-executed, mostly-historical onboarding docs
+   (the Cloudflare account/project/deploy steps they walk through are
+   done); this sprint's doc-accuracy scope was explicitly `README.md` +
+   `wrangler.toml` + `_redirects` (the live, load-bearing ones), not the
+   full doc tree. Not a functional problem — nothing reachable is broken
+   — but worth a cleanup pass so a future reader isn't confused the way
+   `wrangler.toml`'s stale "PLACEHOLDER" comment confused this one.
+2. **`PublicHostNotice` rendering was not visually confirmed in a real
+   browser.** See Phase 2 — the URL is reachable, the code path is
+   unit-tested and correctly wired, the JS bundle serves correctly; the
+   actual rendered DOM was not screenshotted or clicked through, because
+   no browser automation tool exists in this environment. This is the
+   first sprint where that gap is load-bearing rather than academic —
+   until now the page wasn't reachable at all, so it didn't matter that
+   nobody could screenshot it.
+3. **`sdk/`'s dependencies are pinned only by inheritance, not by their
+   own lockfile.** Correct today (verified subset relationship), but
+   silent by construction: if `sdk/setup.py` ever adds a dependency
+   backend doesn't already have, `pip install --no-deps -e sdk` in CI
+   will install fine but leave that new dependency completely
+   unresolved/unpinned, and nothing will flag the gap until something
+   fails at import or runtime. Giving `sdk/` its own `pyproject.toml` and
+   lock file would close this properly; not done here since the actual
+   current dependency set doesn't need it yet.
+4. **Domain purchase and email remain deliberately out of scope**, per
+   `docs/free_tier_launch_steps.md` — unchanged from every prior sprint's
+   note on this.
+
+## Commits ready for review
+
+```
+979de20 fix(frontend): make landing.html the literal build-root index.html
+f43893f fix(frontend): remove /app _redirects rule -- it caused an infinite loop
+08cb907 fix(backend): pin dependencies with a pip-compile lock file
+```
+
+All pushed to `origin/main`, all individually confirmed green in CI by
+run id before moving to the next phase (`33000874315`, `33001423365`,
+`33002689329`).
