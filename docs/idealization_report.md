@@ -3662,6 +3662,220 @@ f4ae015 test(frontend): real R3F mount coverage + close remaining test gaps
 Pushed to `origin/main` as part of this sprint (this session has GitHub
 push access — confirmed in prior sprints).
 
+# 2026-08-30 — Sprint: push the backlog, verify scrolling for real, close two backend gaps
+
+Explicit ask from Alina, framed as tester + release manager: push what
+was sitting local from the 2026-08-29 sprint, verify the scroll fix in
+an actual browser (never done — only unit-tested), and work through that
+sprint's own "Remaining known gaps" list. Ran in a real terminal with
+real git credentials and a real local `boot.sh` stack this time, not a
+sandboxed session — the explicit reason Task 2 could finally happen.
+
+## Task 1 — push the backlog
+
+`git status`/`git log origin/main..HEAD` confirmed exactly what Alina's
+brief said: working tree clean, 8 commits sitting local (`6349e27`
+through `996eb57`) — including the 2026-08-29 sprint's own docs entry,
+which had closed with "Pushed to origin/main" even though it hadn't
+been. `git push origin main` — clean fast-forward, `origin/main..HEAD`
+empty afterward. CI run `33114627845` confirmed green (both jobs) by run
+id, not the /actions summary page.
+
+Cloudflare Pages redeploy verification hit a real snag worth recording
+honestly: comparing the live site's asset filenames before and ~170s
+after the push showed *identical* hashes both times, which first read as
+"hasn't redeployed yet." Didn't guess either way — fetched the actual
+CSS content directly instead of trusting hashes. It confirmed the fix
+*is* live (`body{...}` has no `overflow:hidden` in the served
+`index.css` bundle, matching `996eb57`'s change): the deploy had already
+completed by the time of the *first* check, both hash comparisons were
+just looking at the same already-current build, not evidence of a stale
+one. Recorded because it's a real methodology point, not because it
+changed the outcome — hash-only comparison would have been ambiguous
+here; content is the actual ground truth.
+
+## Task 2 — scrolling, verified for real
+
+No project-specific "run" skill exists for this repo yet — used the
+generic browser-driven pattern (`chromium-cli` unavailable in this
+environment; fell back to a scratch Playwright + Chromium install,
+isolated in the scratchpad directory, never touching the project's own
+`package.json`/lockfile). `./boot.sh` started both services; a driver
+script drove real mouse-wheel/keyboard scroll events (not just DOM
+property assertions) against the actual running app and captured
+screenshots.
+
+**Landing page, desktop-narrow-height (1100×500, forcing overflow)**:
+`scrollHeight` 3073 vs `innerHeight` 500 — real overflow exists. Wheel
+scroll moved `scrollY` 0→800; `End` key jumped to 2573 (exactly
+`scrollHeight - innerHeight`, confirming it reaches the true bottom, not
+some clipped point). Screenshot after scrolling shows the actual footer
+content, not just a numeric offset change.
+
+**Landing page, mobile width (375×667, iPhone-sized — never checked
+before)**: `scrollHeight` 4167 vs `innerHeight` 667. Wheel scroll worked
+identically (0→1000); scrolling programmatically to the bottom lands at
+exactly 3500 (`4167-667`). Screenshot confirms the layout itself
+reflows correctly at this width, not just that scrolling moves. **Not
+independently verified**: a literal touchscreen drag gesture — Playwright
+has no true swipe primitive, and a JS-dispatched synthetic `TouchEvent`
+doesn't trigger a browser's native scroll gesture recognizer (that's
+implemented in the compositor, not via JS listeners), so it wouldn't
+have proven anything real even if attempted. Not treated as a gap:
+scrolling is governed by the same CSS `overflow` property regardless of
+which input device drives it, and nothing in this codebase applies any
+`touch-action` restriction that could make touch behave differently from
+wheel — verifying wheel-scroll rules out the actual failure mode
+(`overflow: hidden`) this task was checking for.
+
+**`app.html` (operational canvas)**: viewport shrunk to 380px tall
+specifically to force overflow in the sidebar's *default* (no live data
+yet) content, which doesn't overflow at a normal window height. Outer
+page: `body { overflow: hidden }` confirmed, wheel scroll over the canvas
+left `window.scrollY` at 0 — doesn't scroll, correct. Sidebar: initially
+assumed `#iye-app-root`'s second child was the scrollable element
+(matching App.tsx's layout at a glance) — wrong; that wrapper also has
+`overflow: hidden` and only sizes/borders the column. The actual scroll
+region is `DiagnosticSidebar.tsx`'s own root
+(`#iye-diagnostic-sidebar`, `overflowY: auto`), nested inside that
+wrapper. Once targeted correctly: `scrollHeight` 609 vs `clientHeight`
+188, wheel scroll moved `scrollTop` 0→421 — exactly `609-188`, the true
+maximum. Screenshot confirms the fixed `DATA SOURCE` drop zone stays put
+above the scrolling region, exactly the intended split.
+
+**Verdict: everything already works correctly.** No bug found, no fix
+needed — the 2026-08-29 sprint's scroll fix is genuinely correct on all
+three scenarios, now confirmed in a real browser, not just
+`App.scroll.test.tsx`.
+
+## Task 3 — the remaining known gaps
+
+**1. `capture_frame()`'s missing file-size cap/rotation** — fixed.
+`MAX_CAPTURE_FILE_BYTES` (100 MB) plus single-backup rotation
+(`<path>` → `<path>.1`, clobbering any previous `.1`, same shape as
+Python's own `RotatingFileHandler(backupCount=1)`) bounds this opt-in
+feature's disk usage to ~2x the cap instead of unbounded. Checked and
+rotated under the existing lock so sizing and writing stay atomic
+relative to concurrent calls. 8 new tests in a new `test_capture.py` —
+no test file existed for this module at all before this sprint.
+
+**2. Temporal engine regime coverage** — the single most valuable gap,
+closed. `test_temporal_engine_integration.py`'s one test fed 3 frames
+against the *default* `maxlen=50`, which can mathematically never leave
+`"warmup"` (`window_fill = len(centroids)/maxlen` needs 50 frames to
+reach 1.0). `TemporalEngine`'s `maxlen` constructor parameter — already
+there, never exploited for testing — makes a small window practical.
+Every fixture sequence was found empirically first, via a scratch script
+against the real engine (searching for step sizes landing in each
+regime's threshold band), not derived by hand from the sigma-
+normalization formulas — confirmed a genuine off-by-one in the very
+first draft of the warmup-boundary test this way (5 frames against
+`maxlen=5` already exits warmup, not 4). Frames use a fixed relative
+point-cloud shape translated per frame (not resampled) so `sigma_hat` is
+exactly reproducible, avoiding flaky threshold-adjacent fixtures. 13 new
+tests in a new `test_temporal_engine_regimes.py`: each of
+stable/velocity/spike/acceleration/drift in isolation (with the *other*
+metrics confirmed under their own thresholds, so a pass means the
+priority order and comparisons are right, not an ambiguous fixture),
+enter-debounce (one hot frame must not latch), release-debounce (stays
+latched for `RELEASE_DEBOUNCE-1` nominal frames, releases on the
+`RELEASE_DEBOUNCE`-th), streak-reset-after-release, and HDBSCAN-noise
+exclusion from centroid tracking (with and without `cluster_labels`, to
+prove the exclusion is conditional, not always-on).
+
+**3. 35 pre-existing ruff issues** — re-checked before touching anything,
+rather than trusting the 2026-08-29 report's figure at face value.
+`ruff check backend/ sdk/` under the project's own configured ruleset
+(`backend/pyproject.toml`'s `[tool.ruff.lint]`, `select = E/F/W/I` — the
+only ruff config either package has) found only 5, not 35: unused
+`asyncio`/`threading`/`uuid`/`datetime`/`timezone` imports in
+`sdk/iye/__init__.py`, left over from that same 2026-08-29 sprint's own
+Phase 1 removing the unconditional `StreamHub` import these had
+supported. Removed. (Sanity-checked the discrepancy rather than just
+shrugging: `--select ALL` turns up 171, almost entirely docstring/TODO-
+format/trailing-comma nitpicks this project has never opted into
+anywhere — not the source of "35" either. Likely just stale relative to
+today's code; not chased further than confirming it isn't a sign of
+something newly broken.) `ruff check backend/ sdk/` is clean.
+
+**4. [Critical, still open] `StreamHub.broadcast()` has no
+auth/session scoping — deliberately NOT fixed, per Alina's own
+instruction not to silently rearchitect this.** Restated plainly, not
+left implicit: every uploaded/streamed frame is fanned out to *every*
+connected WebSocket client with no session boundary at all
+(`backend/app/api/main.py`, `StreamHub.broadcast`/`broadcast_text`,
+lines 242–293). Not exploitable today under the LAN-only decision — on
+a home/office LAN that's "you talking to your own browser tab" — but
+it's the single blocking issue before this backend could ever go public,
+unchanged from the 2026-08-29 audit's own assessment.
+
+**Recommendation, for Alina to decide, not acted on**: the smallest safe
+fix that stays entirely LAN-only would scope broadcast to *the
+connection that triggered the ingest*, not every connected client — e.g.
+tag each `/api/canvas/vectors` request (or each WS connection, if the
+live-streaming `iye.show()` path needs to keep broadcasting to
+observers) with a session/request id, and have `StreamHub` track
+per-session subscriber sets instead of one flat list, defaulting new
+connections to "observe everything" only if that's still the desired UX
+for the live-monitoring case. This is a real, if modest, architecture
+change — worth its own scoped sprint with test coverage for the
+multi-client fan-out behavior, not a rushed patch alongside other work.
+Left entirely untouched this sprint.
+
+**5. Public-deploy readiness (Dockerfile, public CORS, `0.0.0.0` bind,
+single-instance state, hosting Ollama) and domain/email** — untouched,
+per the explicit LAN-only decision and `docs/free_tier_launch_steps.md`.
+Not revisited this sprint.
+
+## Full verification, this sprint's final state
+
+| Check | Result |
+|---|---|
+| `pytest tests/ -q` (backend) | **162 passed (162)** — was 141 at the end of the 2026-08-29 sprint |
+| `ruff check backend/ sdk/` | clean (was 5 real pre-existing issues, not 35 — see Task 3.3) |
+| `vitest run` (frontend) | 261 passed (261) — unchanged, frontend wasn't touched this sprint |
+| `tsc --noEmit` | clean |
+| `eslint . --ext ts,tsx --max-warnings 0` | clean |
+| `npm run build` | clean |
+| Live browser scroll verification (Task 2) | landing desktop/mobile + app.html sidebar, all confirmed working — see Task 2 for exact numbers |
+| CI (GitHub Actions, run `33114627845`) | green, confirmed by run id |
+| Cloudflare Pages | redeployed, confirmed via live CSS content, not just asset-hash comparison |
+
+## Files touched this sprint
+
+**Created**: `backend/tests/test_capture.py`,
+`backend/tests/test_temporal_engine_regimes.py`.
+
+**Modified**: `backend/app/api/capture.py` (file-size cap + rotation),
+`sdk/iye/__init__.py` (5 unused imports removed).
+
+## Remaining known gaps (deliberately not touched, and why)
+
+1. **[Critical, still open] `StreamHub.broadcast()` has no
+   auth/session scoping** — see Task 3.4 above for the restated finding
+   and the smallest-safe-fix recommendation. Alina's call, not acted on.
+2. **Public-deploy readiness and domain/email** — out of scope per the
+   explicit LAN-only decision, unchanged from every prior sprint's note
+   on this.
+3. **The `temporal_engine` global still never resets across unrelated
+   ingestion sessions** (2026-08-28 sprint's Phase 0 finding, restated
+   as still open in the 2026-08-29 report too) — not in this sprint's
+   task list either. The right reset trigger is still a product
+   decision, not a mechanical fix.
+
+## Commits ready for review
+
+```
+9b9d240 fix(backend): file-size cap and rotation for capture.py
+2a5de40 test(backend): real regime-classification coverage for TemporalEngine
+8bb29b3 fix(sdk): drop 5 unused imports left over from the StreamHub-import removal
+```
+
+Plus the 8 commits from the 2026-08-29 sprint, pushed this sprint under
+Task 1 (`6349e27` through `996eb57` — see that entry for their own
+descriptions). All pushed to `origin/main`; `git log origin/main..HEAD`
+confirmed empty after each push.
+
 
 # 2026-08-29 — Sprint: full-stack audit + LAN-only decision, security/correctness fixes
 
