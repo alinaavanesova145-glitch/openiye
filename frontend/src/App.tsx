@@ -1,4 +1,5 @@
 import React, { Suspense, lazy, useCallback } from 'react'
+import { ErrorBoundary } from '@lib/ErrorBoundary'
 import { useVectorDiagnostics } from '@canvas/math/useVectorDiagnostics'
 import { DiagnosticSidebar } from '@/ui/DiagnosticSidebar'
 import { DataSourcePanel } from '@/ui/DataSourcePanel'
@@ -152,9 +153,11 @@ const ViewportPanel: React.FC<VectorViewportProps> = (viewportProps) => (
       background: COLORS.bg,
     }}
   >
-    <Suspense fallback={<ViewportFallback />}>
-      <VectorViewport {...viewportProps} />
-    </Suspense>
+    <ErrorBoundary fallbackTitle="3D viewport">
+      <Suspense fallback={<ViewportFallback />}>
+        <VectorViewport {...viewportProps} />
+      </Suspense>
+    </ErrorBoundary>
 
     {/* Minimal top-left label */}
     <div
