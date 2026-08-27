@@ -309,6 +309,26 @@ describe('parseJsonMatrix', () => {
     }
   })
 
+  it('preserves a JSON column literally named "__proto__" instead of silently dropping it (2026-08-27 sprint)', () => {
+    // Bracket/computed-key syntax (not a literal `{__proto__: ...}` object
+    // key), so JS actually creates the property being tested rather than
+    // triggering the object-literal syntax's own special-cased prototype
+    // assignment -- this way the string JSON.stringify produces, and what
+    // JSON.parse (inside parseJsonMatrix) then reconstructs from it, both
+    // genuinely contain an own "__proto__" data property, exactly like a
+    // real uploaded JSON file with a column header spelled that way would.
+    const rawJson = JSON.stringify([
+      { ['__proto__']: 3.1, x: 1 },
+      { ['__proto__']: 4.2, x: 2 },
+    ])
+    const outcome = parseJsonMatrix(rawJson)
+    expect(outcome.kind).toBe('ok')
+    if (outcome.kind === 'ok') {
+      expect(outcome.matrix.totalColumns).toBe(2)
+      expect(outcome.matrix.encoding.featureNames).toContain('__proto__')
+    }
+  })
+
   it('treats objects nested beyond the max flatten depth as an opaque (skipped) leaf', () => {
     // depth: a=0, .l1=1, .l2=2, .l3=3 (still flattened, at the limit), .l4=4 (over the limit → opaque).
     // 25 rows (>= the near-unique ratio check's minimum) with a distinct

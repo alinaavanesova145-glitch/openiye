@@ -216,6 +216,26 @@ const JITTER_FACTOR = 0.3
 
 // ─── Validation & Parsing ─────────────────────────────────────────────────────
 
+// 2026-08-27 sprint: every nested-coordinate-array branch below used to
+// flatten *every* numeric value in each sub-array with no length check --
+// one malformed entry (e.g. [1, 2] or [1, 2, 3, 4] instead of [x, y, z])
+// didn't fail loudly, it silently desynced every point *after* it in the
+// same frame (coordinates.length stopping being a multiple of 3 shifts
+// every subsequent point's x/y/z triplet by one slot). Thrown here instead
+// of silently truncated -- parseInboundPayload's callers already sit
+// inside ws.onmessage's outer try/catch ("Drop malformed messages
+// safely"), the same path an unparseable JSON message already takes, so
+// this reuses existing, tested rejection behavior rather than adding a
+// second one.
+function pushTriple(item: unknown[], dest: number[]): void {
+  if (item.length !== 3 || !item.every((v) => typeof v === 'number')) {
+    throw new Error(
+      `malformed coordinate entry: expected [x, y, z], got array of length ${item.length}`,
+    )
+  }
+  dest.push(item[0] as number, item[1] as number, item[2] as number)
+}
+
 function parseInboundPayload(data: unknown): { coordinates: number[]; anomalyIndices: number[] } {
   const result = { coordinates: [] as number[], anomalyIndices: [] as number[] }
   if (!data) return result
@@ -225,11 +245,7 @@ function parseInboundPayload(data: unknown): { coordinates: number[]; anomalyInd
       const nested = data as unknown[][]
       for (const item of nested) {
         if (Array.isArray(item)) {
-          for (const val of item) {
-            if (typeof val === 'number') {
-              result.coordinates.push(val)
-            }
-          }
+          pushTriple(item, result.coordinates)
         }
       }
     } else {
@@ -259,11 +275,7 @@ function parseInboundPayload(data: unknown): { coordinates: number[]; anomalyInd
       const coords = obj.coordinates as unknown[]
       for (const item of coords) {
         if (Array.isArray(item)) {
-          for (const val of item) {
-            if (typeof val === 'number') {
-              result.coordinates.push(val)
-            }
-          }
+          pushTriple(item, result.coordinates)
         } else if (typeof item === 'object' && item !== null) {
           const pt = item as Record<string, unknown>
           if (typeof pt.x === 'number' && typeof pt.y === 'number' && typeof pt.z === 'number') {
@@ -278,11 +290,7 @@ function parseInboundPayload(data: unknown): { coordinates: number[]; anomalyInd
       const pts = obj.points as unknown[]
       for (const item of pts) {
         if (Array.isArray(item)) {
-          for (const val of item) {
-            if (typeof val === 'number') {
-              result.coordinates.push(val)
-            }
-          }
+          pushTriple(item, result.coordinates)
         } else if (typeof item === 'number') {
           result.coordinates.push(item)
         }

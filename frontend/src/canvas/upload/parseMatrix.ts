@@ -353,7 +353,16 @@ function flattenObject(
   prefix = '',
   depth = 0,
 ): Record<string, unknown> {
-  const result: Record<string, unknown> = {}
+  // Object.create(null), not {} (2026-08-27 sprint): a plain object
+  // literal's `__proto__` is an inherited *accessor*, not a normal data
+  // property -- `result[path] = value` for a column literally named
+  // "__proto__" (a real JSON column header a real dataset can have) hits
+  // that accessor's setter instead of creating an own property, and the
+  // setter silently no-ops for a non-object value. Net effect: that
+  // entire column vanished from the parsed matrix with zero warning. A
+  // null-prototype object has no such accessor, so "__proto__" behaves
+  // like any other ordinary key.
+  const result: Record<string, unknown> = Object.create(null)
   for (const [key, value] of Object.entries(obj)) {
     const path = prefix ? `${prefix}.${key}` : key
     const isPlainObject = value !== null && typeof value === 'object' && !Array.isArray(value)

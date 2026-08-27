@@ -416,6 +416,60 @@ describe('useVectorStream — narrative messages', () => {
   })
 })
 
+describe('useVectorStream — ragged coordinate sub-arrays (2026-08-27 sprint)', () => {
+  // Every nested-coordinate-array branch in parseInboundPayload used to
+  // flatten *every* numeric value with no length check -- one malformed
+  // [x, y] or [x, y, z, w] entry silently shifted every subsequent point's
+  // triplet by one slot instead of failing loudly. Now it's rejected the
+  // same way any other malformed message is (dropped, state untouched).
+
+  it('drops a typed frame message whose coordinates contain a ragged sub-array', () => {
+    const { result } = renderHook(() => useVectorStream())
+    const ws = MockWebSocket.instances[0]
+    act(() => ws.triggerOpen())
+
+    expect(() => {
+      act(() =>
+        ws.triggerMessage({
+          type: 'frame',
+          id: 'ragged',
+          status: 'NOMINAL',
+          timestamp: new Date().toISOString(),
+          coordinates: [
+            [1, 2, 3],
+            [4, 5], // malformed: only 2 elements, not [x, y, z]
+            [6, 7, 8],
+          ],
+          cluster_labels: [0, 0, 0],
+          anomaly_indices: [],
+          explanation: null,
+        }),
+      )
+    }).not.toThrow()
+
+    expect(result.current.liveFrame).toBeNull()
+  })
+
+  it('accepts a well-formed nested [x, y, z] coordinates array on the legacy path', () => {
+    const { result } = renderHook(() => useVectorStream())
+    const ws = MockWebSocket.instances[0]
+    act(() => ws.triggerOpen())
+
+    act(() =>
+      ws.triggerMessage({
+        coordinates: [
+          [1, 2, 3],
+          [4, 5, 6],
+        ],
+        status: 'NOMINAL',
+      }),
+    )
+
+    expect(result.current.positions.length).toBe(6)
+    expect(result.current.liveFrame?.point_count).toBe(2)
+  })
+})
+
 describe('useVectorStream — resilience', () => {
   it('drops malformed JSON without throwing or changing state', () => {
     const { result } = renderHook(() => useVectorStream())
