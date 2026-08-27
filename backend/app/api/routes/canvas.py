@@ -1,13 +1,22 @@
-import uuid
-from datetime import datetime, timezone
-from typing import List, Optional
+"""
+app/api/routes/canvas.py — supplementary canvas routes mounted at
+/api/canvas alongside app/api/main.py's own direct routes.
 
-# Ensure iye is importable
-import iye
-import numpy as np
-from fastapi import APIRouter, HTTPException
-from iye.server import Coordinate3D as IYECoordinate3D
-from iye.server import VectorFramePayload
+Only /mesh lives here now. This module used to also define POST /vectors,
+duplicating app/api/main.py's own @app.post("/api/canvas/vectors") handler
+at the same path -- Starlette matches routes in registration order and
+main.py's direct handler is registered first (module load, before this
+router is included), so that duplicate was permanently unreachable dead
+code: no ragged-row/non-numeric-column/finite-value validation, a
+different default dim (3 vs main.py's 6), and a bare HTTPException
+instead of the real handler's structured 422 contract. Removed rather
+than fixed in place, since main.py's handler is the real, tested,
+maintained one (2026-08-27 sprint; see docs/fullstack_audit_2026-08-27.md).
+"""
+
+from typing import List
+
+from fastapi import APIRouter
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -22,10 +31,6 @@ class MeshData(BaseModel):
     vertices: List[Coordinate3D]
     faces: List[List[int]]
 
-class VectorUploadRequest(BaseModel):
-    data: List[float]
-    dim: Optional[int] = None
-
 @router.get("/mesh", response_model=MeshData)
 async def get_canvas_mesh():
     # Return dummy vector dataset for the canvas rendering
@@ -38,46 +43,3 @@ async def get_canvas_mesh():
         ],
         "faces": [[0, 1, 2]]
     }
-
-@router.post("/vectors", response_model=VectorFramePayload)
-async def process_vectors(request: VectorUploadRequest):
-    if not request.data:
-        raise HTTPException(status_code=400, detail="Empty data list")
-
-    d = request.dim or 3
-    if len(request.data) % d != 0:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Data array size ({len(request.data)}) is not a multiple of dimension {d}"
-        )
-
-    n_samples = len(request.data) // d
-    data_2d = np.array(request.data, dtype=np.float64).reshape(n_samples, d)
-
-    # 1. Dimensionality reduction
-    coords = iye.reduce_to_3d(data_2d)
-
-    # 2. Clustering
-    labels = iye.cluster(coords)
-
-    # 3. Anomaly detection
-    anomaly_indices, explanation = iye.detect_anomalies(coords)
-
-    # 4. Build payload
-    status = "ANOMALY" if len(anomaly_indices) > 0 else "NOMINAL"
-    coordinates = [
-        IYECoordinate3D(x=float(row[0]), y=float(row[1]), z=float(row[2]))
-        for row in coords
-    ]
-
-    return VectorFramePayload(
-        frame_id=str(uuid.uuid4()),
-        timestamp=datetime.now(tz=timezone.utc).isoformat(),
-        status=status,
-        point_count=coords.shape[0],
-        coordinates=coordinates,
-        cluster_labels=labels.tolist(),
-        anomaly_indices=anomaly_indices,
-        explanation=explanation,
-        axis_mapping=None
-    )
