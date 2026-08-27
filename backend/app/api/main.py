@@ -26,7 +26,7 @@ import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ─── Robust sys.path Setup ────────────────────────────────────────────────────
 # Resolves correctly whether uvicorn is invoked from the project root,
@@ -296,6 +296,19 @@ temporal_engine = TemporalEngine()
 # ─── Narrative task lifecycle (decoupled from the broadcast hot path) ───────
 
 NARRATIVE_CONCURRENCY_LIMIT = 4
+# 2026-08-27 sprint: the semaphore above only ever bounded how many
+# narrative calls run *concurrently* -- nothing bounded how many could
+# *queue up* behind it. Each Ollama call takes ~15-22s (see
+# generate_anomaly_explanation's own comment), so a burst of
+# anomaly-triggering uploads (trivial to produce -- one outlier point per
+# frame) piles tasks into _pending_narrative_tasks faster than 4-at-a-time
+# can drain them, with no auth or rate limit anywhere to throttle the
+# burst itself. MAX_PENDING_NARRATIVE_TASKS is a backstop on the queue
+# depth, not a replacement for real rate limiting (see
+# docs/fullstack_audit_2026-08-27.md) -- a request whose narrative gets
+# dropped this way still gets its anomaly frame broadcast immediately and
+# normally; it just doesn't get an LLM narrative for that one frame.
+MAX_PENDING_NARRATIVE_TASKS = 16
 _narrate_semaphore = asyncio.Semaphore(NARRATIVE_CONCURRENCY_LIMIT)
 _pending_narrative_tasks: "set[asyncio.Task]" = set()
 
@@ -309,6 +322,14 @@ async def _narrate(frame_id: str, metrics_summary: str) -> None:
 
 
 def _spawn_narrative_task(frame_id: str, metrics_summary: str) -> None:
+    if len(_pending_narrative_tasks) >= MAX_PENDING_NARRATIVE_TASKS:
+        logger.warning(
+            "Dropping narrative request for frame %s: %d narrative tasks "
+            "already queued/running (cap=%d) — the frame itself was still "
+            "broadcast normally, it just won't get an LLM narrative.",
+            frame_id, len(_pending_narrative_tasks), MAX_PENDING_NARRATIVE_TASKS,
+        )
+        return
     task = asyncio.create_task(_narrate(frame_id, metrics_summary))
     _pending_narrative_tasks.add(task)
     task.add_done_callback(_pending_narrative_tasks.discard)
@@ -353,9 +374,17 @@ class MatrixUploadRequest(BaseModel):
     # Optional (not required) so a `matrix`-only request validates — the two
     # input modes are alternatives, per the docstring, not both-required.
     # Additive/backward-compatible: existing callers already send `data`.
-    data: Optional[List[float]] = None
+    # max_length bounds (2026-08-27 sprint): nothing previously capped
+    # request size, so a multi-million-element payload sailed past every
+    # existing check (non-empty, ragged-row, divisibility) straight into
+    # np.array().reshape() and then UMAP/HDBSCAN -- unbounded memory/CPU
+    # per request, with no auth to throttle who can send one. The caps
+    # below are generous for this tool's actual use case (interactive
+    # local-network telemetry, not big-data batch ingestion) while
+    # ruling out the pathological case.
+    data: Optional[List[float]] = Field(default=None, max_length=500_000)
     dim: Optional[int] = 6          # feature dimension, default 6D metrics matrix
-    matrix: Optional[List[List[Any]]] = None
+    matrix: Optional[List[List[Any]]] = Field(default=None, max_length=50_000)
     encoding_summary: Optional[EncodingSummary] = None
     # One name per column of `matrix` AS SUBMITTED (2026-07-31 sprint) —
     # already-post-encoding names for a browser-pre-encoded numeric matrix,
@@ -365,7 +394,21 @@ class MatrixUploadRequest(BaseModel):
     # Optional; a length mismatch against the actual matrix is treated as
     # absent rather than rejected — naming is a narrative-quality feature,
     # not worth failing ingestion over. See ingest_and_broadcast.
-    column_names: Optional[List[str]] = None
+    column_names: Optional[List[str]] = Field(default=None, max_length=2_000)
+
+    @field_validator("matrix")
+    @classmethod
+    def _cap_row_width(cls, v):
+        """Row-count is capped by max_length above; a single pathologically
+        wide row (e.g. one row, a million columns) would sail through that
+        cap untouched, so width gets its own bound here."""
+        if v is not None:
+            for row in v:
+                if len(row) > 5_000:
+                    raise ValueError(
+                        f"'matrix' rows may have at most 5000 columns, got {len(row)}"
+                    )
+        return v
 
 
 class AnomalyExplainRequest(BaseModel):
@@ -555,6 +598,27 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
             detail="Uploaded payload contained no numeric columns after parsing",
             stage="feature_matrix",
         )
+    if not np.all(np.isfinite(data_2d)):
+        # 2026-08-27 sprint: catches two real, distinct ways a NaN/Infinity
+        # can reach here without ever failing vectorize_matrix's own guard
+        # (that guard only runs on the mixed-type `matrix` path, and only
+        # protects string cells) --
+        #   1. the "fully numeric" fast path (`is_fully_numeric` above):
+        #      Python's json module parses the non-standard-but-permitted
+        #      literals NaN/Infinity/-Infinity as real float('nan')/inf
+        #      values, which `isinstance(v, float)` happily accepts as
+        #      "already numeric", skipping vectorize_matrix entirely;
+        #   2. the flat `data` field, reshaped straight into an array below
+        #      with no validation at all.
+        # Left unguarded, a NaN silently makes np.mean/np.std NaN for that
+        # whole axis, so `z_scores > threshold` (a NaN comparison) is
+        # always False under IEEE 754 -- a real anomaly can be masked
+        # entirely with no error, and the value serializes to JSON `null`
+        # against a frontend contract that promises `x: number`.
+        raise IngestValidationError(
+            detail="Uploaded payload contains non-finite values (NaN/Infinity), which is not supported",
+            stage="ingestion",
+        )
 
     n_samples, n_features = data_2d.shape
     reduction_note = None
@@ -594,12 +658,19 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
             for point_attrs in iye.compute_feature_attributions(data_2d, feature_names_for_attribution)
         ]
     except Exception as e:
+        # 2026-08-27 sprint: the raw exception text used to go straight
+        # into the client-facing 422 detail (str(e) can include internal
+        # file paths, numpy/UMAP/HDBSCAN version-specific message text,
+        # or the raw shape/dtype of internal arrays) -- logged in full
+        # server-side as before, but the response now carries a generic
+        # message so an anonymous, unauthenticated caller (this endpoint
+        # has no auth) can't use error text to fingerprint internals.
         logger.exception(
             "Unexpected failure in reduce/cluster/detect_anomalies for a "
             "%s-shaped payload", data_2d.shape
         )
         raise IngestValidationError(
-            detail=f"Vectorization failed unexpectedly: {e}",
+            detail="Vectorization failed unexpectedly for this payload's shape/values",
             stage="vectorization",
         ) from e
 
@@ -616,8 +687,14 @@ async def ingest_and_broadcast(request: MatrixUploadRequest):
     timestamp = datetime.now(tz=timezone.utc).isoformat()
 
     # Opt-in recalibration capture (IYE_CAPTURE_PATH) — exactly the raw input
-    # TemporalEngine.process_frame consumes below. No-op (zero file I/O) when unset.
-    capture_frame(
+    # TemporalEngine.process_frame consumes below. No-op (zero file I/O) when
+    # unset. Run via asyncio.to_thread (2026-08-27 sprint): capture_frame does
+    # synchronous, lock-held disk I/O (open/write/flush) — called inline, that
+    # blocks the *entire* event loop, including the /stream broadcast fan-out
+    # and every other concurrent request, for the write duration on every
+    # single ingested frame whenever this feature is enabled.
+    await asyncio.to_thread(
+        capture_frame,
         coordinates=coords,
         timestamp=timestamp,
         anomaly_indices=anomaly_idx,
@@ -714,7 +791,11 @@ async def explain_anomaly_point(request: AnomalyExplainRequest):
         # ingest_and_broadcast's vectorization try/except.
         logger.exception("Unexpected failure generating point explanation")
         raise AnomalyExplainError(
-            detail=f"Narrative generation failed unexpectedly: {e}",
+            # Generic detail (2026-08-27 sprint) -- see the matching fix in
+            # ingest_and_broadcast above for why str(e) doesn't belong in a
+            # response to an unauthenticated caller; full text stays in the
+            # server log via logger.exception above.
+            detail="Narrative generation failed unexpectedly",
             stage="llm_unavailable",
         ) from e
 
@@ -756,15 +837,24 @@ async def stream_endpoint(websocket: WebSocket) -> None:
     finally:
         await hub.disconnect(websocket)
 
-# ─── Legacy Router Compatibility ──────────────────────────────────────────────
-
+# ─── Supplementary Routers ─────────────────────────────────────────────────
+#
+# 2026-08-27 sprint: this used to also register app.api.routes.health here,
+# under the same "/api/health" prefix as this file's own @app.get("/api/health")
+# handler above (registered first, at module load, since decorators run
+# top-to-bottom in source order) -- Starlette matches routes in registration
+# order and stops at the first match, so that duplicate health handler was
+# permanently unreachable dead code. Worse: tests/test_api.py was built
+# against app.api.__init__'s separate, never-launched FastAPI app (a second
+# dead app object, now removed) and so was unknowingly asserting on that
+# dead handler's response shape instead of this live one's -- fixed
+# alongside this. canvas/inference stay: their routes (/api/canvas/mesh,
+# /api/inference) aren't shadowed by anything in this file.
 try:
     from app.api.routes import canvas, inference  # noqa: E402
-    from app.api.routes import health as route_health
 
-    app.include_router(route_health.router, prefix="/api/health",         tags=["System"])
-    app.include_router(inference.router,    prefix="/api/inference",       tags=["Inference"])
-    app.include_router(canvas.router,       prefix="/api/canvas",          tags=["Canvas"])
+    app.include_router(inference.router, prefix="/api/inference", tags=["Inference"])
+    app.include_router(canvas.router,    prefix="/api/canvas",    tags=["Canvas"])
 
 except ImportError as _e:
-    logger.warning("Legacy routers unavailable: %s", _e)
+    logger.warning("Supplementary routers unavailable: %s", _e)

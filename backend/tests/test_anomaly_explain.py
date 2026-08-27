@@ -91,6 +91,52 @@ def test_explain_malformed_request_missing_fields_rejected():
     assert response.status_code == 422
 
 
+# ─── feature_attributions.name length cap (2026-08-27 sprint) ─────────────────
+#
+# `name` is echoed straight from a prior /api/canvas/vectors response back
+# into this endpoint's request, and lands unsanitized inside the Ollama
+# narrative prompt (generate_anomaly_explanation) -- this endpoint takes no
+# auth, so a hand-crafted request could set it to anything. Capped at the
+# Pydantic model level (iye.server.FeatureAttribution) rather than only at
+# the endpoint, so every caller of that model gets the same protection.
+
+
+def test_explain_oversized_feature_attribution_name_rejected():
+    """Distinguished from the Ollama-unreachable 422 this test env also
+    produces (see below) by shape: a Pydantic field-validation failure
+    returns FastAPI's default {"detail": [{"type": ..., "loc": ...}]}
+    list-of-errors shape, not this app's own structured-error contract
+    ({"error", "status", "detail": str, "stage"})."""
+    request = _valid_explain_request(
+        feature_attributions=[{"name": "x" * 201, "z_score": 3.0}]
+    )
+    response = client.post("/api/canvas/anomaly/explain", json=request)
+    assert response.status_code == 422
+    body = response.json()
+    assert isinstance(body["detail"], list)
+    assert body["detail"][0]["type"] == "string_too_long"
+    assert body["detail"][0]["loc"][-1] == "name"
+
+
+def test_explain_feature_attribution_name_at_the_cap_is_not_rejected_by_validation():
+    """A 200-char name must clear Pydantic validation and reach the real
+    handler -- this test env has no live Ollama to reach, so the request
+    still 422s, but as this app's own structured llm_unavailable error
+    (see test_explain_llm_unreachable_returns_structured_error below),
+    never as a field-validation error. That's the actual thing worth
+    asserting here: the cap is inclusive (200 is accepted, 201 is not),
+    not "the full request succeeds end to end", which depends on Ollama
+    actually being reachable."""
+    request = _valid_explain_request(
+        feature_attributions=[{"name": "x" * 200, "z_score": 3.0}]
+    )
+    response = client.post("/api/canvas/anomaly/explain", json=request)
+    body = response.json()
+    assert not isinstance(body.get("detail"), list), (
+        "a 200-char name should never trip the max_length=200 validator"
+    )
+
+
 # ─── LLM failure modes ───────────────────────────────────────────────────────────
 
 

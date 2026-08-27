@@ -209,3 +209,87 @@ def test_two_rows_three_features_bypasses_umap_entirely_no_fallback_note():
     body = response.json()
     assert body["reduction_note"] is None
     assert body["cluster_labels"] == [-1, -1]
+
+
+# ─── 2026-08-27 sprint: non-finite (NaN/Infinity) values in a payload ────────
+#
+# Python's json module parses the non-standard-but-permitted literals NaN /
+# Infinity / -Infinity as real float('nan')/inf values by default (both
+# stdlib json and Starlette/FastAPI's request parsing accept them) -- a
+# payload containing them used to sail straight past every existing check
+# (isinstance(v, float) happily accepts NaN/inf as "already numeric") into
+# UMAP/HDBSCAN/z-score math, silently masking real anomalies on that axis
+# and serializing as JSON `null` against a contract that promises numbers.
+
+
+def _post_raw_json(path: str, raw_body: str):
+    """httpx's TestClient (used via the `json=` kwarg) refuses to encode
+    NaN/Infinity client-side (`allow_nan=False`) -- but that's a test-client
+    restriction, not the real world: stdlib json.loads (what FastAPI/
+    Starlette actually parses incoming request bodies with) accepts those
+    non-standard-but-permitted literals by default, so a real attacker (or
+    a non-Python HTTP client) can send them just fine. Posting the raw
+    bytes directly reproduces what a real client can actually do."""
+    return client.post(
+        path,
+        content=raw_body.encode("utf-8"),
+        headers={"content-type": "application/json"},
+    )
+
+
+def test_flat_data_containing_nan_rejected_not_silently_corrupted():
+    response = _post_raw_json(
+        "/api/canvas/vectors",
+        '{"data": [1.0, 2.0, 3.0, 1.0, 2.0, NaN], "dim": 3}',
+    )
+    _assert_structured_422(response, "ingestion")
+
+
+def test_flat_data_containing_infinity_rejected():
+    response = _post_raw_json(
+        "/api/canvas/vectors",
+        '{"data": [1.0, 2.0, 3.0, 1.0, 2.0, Infinity], "dim": 3}',
+    )
+    _assert_structured_422(response, "ingestion")
+
+
+def test_matrix_of_all_finite_numbers_via_the_fully_numeric_fast_path_still_works():
+    """Sanity check that the new finite guard doesn't false-positive on
+    ordinary, entirely-finite data taking the fully-numeric fast path."""
+    response = client.post(
+        "/api/canvas/vectors",
+        json={"matrix": [[1.0, 2.0, 3.0]] * 5},
+    )
+    assert response.status_code == 200
+
+
+# ─── 2026-08-27 sprint: request size limits ─────────────────────────────────
+#
+# Nothing previously bounded payload size -- a pathological request went
+# straight into np.array().reshape() and then UMAP/HDBSCAN with no cap.
+
+
+def test_oversized_flat_data_rejected_by_field_length_cap():
+    response = client.post(
+        "/api/canvas/vectors",
+        json={"data": [1.0] * 500_001, "dim": 3},
+    )
+    assert response.status_code == 422  # Pydantic's own validation-error shape
+
+
+def test_oversized_matrix_row_count_rejected():
+    response = client.post(
+        "/api/canvas/vectors",
+        json={"matrix": [[1.0, 2.0, 3.0]] * 50_001},
+    )
+    assert response.status_code == 422
+
+
+def test_pathologically_wide_single_row_rejected():
+    """One row with far more columns than any real dataset would have --
+    row-count caps alone wouldn't catch this."""
+    response = client.post(
+        "/api/canvas/vectors",
+        json={"matrix": [[1.0] * 5_001, [1.0] * 5_001]},
+    )
+    assert response.status_code == 422
