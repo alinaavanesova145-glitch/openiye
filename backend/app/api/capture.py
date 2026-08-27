@@ -32,9 +32,34 @@ import numpy as np
 _CAPTURE_PATH = os.environ.get("IYE_CAPTURE_PATH")
 _lock = threading.Lock()
 
+# A long-running LAN session with this feature enabled appends one line per
+# ingested frame forever, with no natural end — left alone, the file grows
+# unboundedly (2026-08-29 sprint finding). Rotates like a standard
+# single-backup log: once the active file would exceed this, it's renamed to
+# `<path>.1` (clobbering any previous `.1`) and a fresh file starts at
+# `<path>`. Bounds total disk usage for this feature to ~2x this constant.
+# 100 MB is generous for a JSONL of small per-frame records (a handful of KB
+# each even for a large point cloud) while still being a real, enforced cap
+# instead of none at all.
+MAX_CAPTURE_FILE_BYTES = 100 * 1024 * 1024
+
 
 def is_capture_enabled() -> bool:
     return _CAPTURE_PATH is not None
+
+
+def _rotate_if_needed(path: str) -> None:
+    """Renames `path` -> `path.1` (overwriting any existing `path.1`) if
+    `path` already meets or exceeds MAX_CAPTURE_FILE_BYTES. Must be called
+    with `_lock` held — sizing a file and then writing to it isn't atomic
+    on its own. A no-op if `path` doesn't exist yet (first-ever write)."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return
+    if size < MAX_CAPTURE_FILE_BYTES:
+        return
+    os.replace(path, path + ".1")  # atomic rename on POSIX; overwrites path.1 if present
 
 
 def capture_frame(
@@ -55,5 +80,6 @@ def capture_frame(
     }
     line = json.dumps(record)
     with _lock:
+        _rotate_if_needed(_CAPTURE_PATH)
         with open(_CAPTURE_PATH, "a") as f:
             f.write(line + "\n")
