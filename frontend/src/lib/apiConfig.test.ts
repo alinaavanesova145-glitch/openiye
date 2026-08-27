@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { computeApiBase, computeWsBase, isLikelyPublicHost } from './apiConfig'
+import { computeApiBase, computeWsBase, isLikelyPublicHost, validateApiBaseOverride } from './apiConfig'
 
 describe('computeApiBase', () => {
   it('derives from localhost', () => {
@@ -54,5 +54,32 @@ describe('isLikelyPublicHost (2026-08-01 sprint)', () => {
   it('is true for a private-range-adjacent but out-of-bounds IP (172.32.x is NOT RFC 1918)', () => {
     expect(isLikelyPublicHost('172.32.0.1')).toBe(true)
     expect(isLikelyPublicHost('172.15.0.1')).toBe(true)
+  })
+})
+
+describe('validateApiBaseOverride (2026-08-27 sprint, finding #4)', () => {
+  it('accepts a well-formed http override', () => {
+    expect(validateApiBaseOverride('http://192.168.1.4:8050')).toBeNull()
+  })
+
+  it('accepts a well-formed https override', () => {
+    expect(validateApiBaseOverride('https://backend.example.com')).toBeNull()
+  })
+
+  it('flags a scheme-less host:port override — the exact misconfiguration this sprint addresses', () => {
+    const warning = validateApiBaseOverride('192.168.1.4:8050')
+    expect(warning).not.toBeNull()
+    expect(warning).toContain('192.168.1.4:8050')
+    expect(warning).toContain('http://192.168.1.4:8050')
+  })
+
+  it('flags a bare hostname with no scheme and no port', () => {
+    const warning = validateApiBaseOverride('backend.local')
+    expect(warning).not.toBeNull()
+  })
+
+  it('flags a scheme typo (missing the //) rather than staying silent', () => {
+    const warning = validateApiBaseOverride('http:192.168.1.4:8050')
+    expect(warning).not.toBeNull()
   })
 })

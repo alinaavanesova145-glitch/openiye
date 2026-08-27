@@ -248,4 +248,38 @@ describe('useAnomalyExplain', () => {
 
     expect(abortSpy).toHaveBeenCalledOnce()
   })
+
+  // NEW 2026-08-27 — audit finding #5: unmounting mid-request (e.g. a
+  // route change while the panel is open) previously left the fetch
+  // running to completion in the background — a wasted real LLM call on
+  // the backend, only ever canceled by a *new* click or an explicit
+  // dismiss(), never by the component simply going away.
+  it('unmounting mid-request aborts the in-flight fetch', () => {
+    const abortSpy = vi.fn()
+    mockFetch(
+      (init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            abortSpy()
+            reject(new DOMException('aborted', 'AbortError'))
+          })
+        }),
+    )
+    const { result, unmount } = renderHook(() => useAnomalyExplain())
+
+    act(() => {
+      result.current.explainPoint(SAMPLE_POINT)
+    })
+    expect(abortSpy).not.toHaveBeenCalled()
+
+    unmount()
+
+    expect(abortSpy).toHaveBeenCalledOnce()
+  })
+
+  it('unmounting with nothing in flight is a harmless no-op', () => {
+    mockFetch(() => new Promise(() => {}))
+    const { unmount } = renderHook(() => useAnomalyExplain())
+    expect(() => unmount()).not.toThrow()
+  })
 })

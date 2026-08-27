@@ -34,13 +34,37 @@ export function computeWsBase(apiBase: string): string {
   return apiBase.replace(/^http/, 'ws')
 }
 
+/** Pure — flags a VITE_API_BASE override with no `http://`/`https://`
+ *  scheme (2026-08-27 sprint, finding #4). Without this, e.g.
+ *  `VITE_API_BASE=192.168.1.4:8050` silently produces a fetch URL that's
+ *  resolved as *relative* to the page instead of absolute, and a
+ *  WebSocket URL that throws a SyntaxError — both of which manifest as a
+ *  permanently-failing reconnect loop indistinguishable from "the backend
+ *  just isn't running yet," with no hint that the env var itself is the
+ *  actual cause. Returns a warning string to log, or null when the
+ *  override is well-formed. */
+export function validateApiBaseOverride(override: string): string | null {
+  if (/^https?:\/\//.test(override)) return null
+  return (
+    `VITE_API_BASE is set to "${override}", which has no http:// or https:// scheme — ` +
+    'requests built from it will not resolve as an absolute URL and will fail in a way ' +
+    `that looks identical to "backend not running." Did you mean "http://${override}"?`
+  )
+}
+
 /** Thin environment-reading wrapper around computeApiBase — not itself unit
  *  tested (same "prove the pure core, document the env-coupled boundary"
  *  pattern already used elsewhere in this codebase); reads
  *  import.meta.env/window.location once at module load. */
 function deriveApiBase(): string {
   const override = import.meta.env.VITE_API_BASE
-  if (override) return stripTrailingSlash(override)
+  if (override) {
+    const warning = validateApiBaseOverride(override)
+    // This project's eslint config doesn't restrict console usage (see
+    // ErrorBoundary.tsx) — a misconfigured env var deserves to be loud.
+    if (warning) console.warn(`[apiConfig] ${warning}`)
+    return stripTrailingSlash(override)
+  }
   if (typeof window === 'undefined') return computeApiBase('http:', '127.0.0.1')
   return computeApiBase(window.location.protocol, window.location.hostname)
 }

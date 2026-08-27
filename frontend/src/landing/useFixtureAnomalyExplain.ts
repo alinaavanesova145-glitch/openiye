@@ -14,7 +14,7 @@
  * be presented as, a live model call. See demoFixture.ts's docstring.
  */
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   AnomalyExplainResult,
   AnomalyExplainState,
@@ -30,6 +30,15 @@ export function useFixtureAnomalyExplain(): AnomalyExplainResult {
   // first's simulated delay elapses must supersede it, not race it.
   const requestGenerationRef = useRef(0)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // (2026-08-27 sprint, finding #5) Mirrors the real hook's unmount
+  // cleanup: without this, the simulated-delay timeout fires after
+  // unmount and calls setExplainState on a component that's gone.
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current !== null) clearTimeout(timeoutRef.current)
+    }
+  }, [])
 
   const explainPoint = useCallback((point: ExplainablePoint) => {
     const generation = ++requestGenerationRef.current

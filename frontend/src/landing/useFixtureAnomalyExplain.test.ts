@@ -128,4 +128,27 @@ describe('useFixtureAnomalyExplain', () => {
       explanation: DEMO_NARRATIVES[second],
     })
   })
+
+  // NEW 2026-08-27 — audit finding #5, mirrored from the real hook: the
+  // simulated-delay timeout previously wasn't canceled on unmount, only
+  // on a newer click or dismiss() — so it fired setExplainState on a
+  // component that was already gone.
+  it('unmounting mid-request clears the pending simulated-delay timeout', () => {
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout')
+    const { result, unmount } = renderHook(() => useFixtureAnomalyExplain())
+
+    act(() => {
+      result.current.explainPoint(pointFor(DEMO_ANOMALY_INDICES[0]))
+    })
+    const callsBeforeUnmount = clearTimeoutSpy.mock.calls.length
+
+    unmount()
+
+    expect(clearTimeoutSpy.mock.calls.length).toBeGreaterThan(callsBeforeUnmount)
+  })
+
+  it('unmounting with nothing in flight is a harmless no-op', () => {
+    const { unmount } = renderHook(() => useFixtureAnomalyExplain())
+    expect(() => unmount()).not.toThrow()
+  })
 })

@@ -14,7 +14,7 @@
  * postMatrix/error-taxonomy pattern.
  */
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { API_BASE } from '@lib/apiConfig'
 import type { FeatureAttribution, VectorCoordinate3D } from './useVectorStream'
 
@@ -101,6 +101,19 @@ export function useAnomalyExplain(): AnomalyExplainResult {
   // result within the *same* (not-yet-superseded-or-dismissed) generation.
   const abortControllerRef = useRef<AbortController | null>(null)
   const abortedByTimeoutRef = useRef(false)
+
+  // (2026-08-27 sprint, finding #5) Neither this hook nor
+  // useFixtureAnomalyExplain previously canceled an in-flight request on
+  // unmount — only on being superseded by a newer click. Navigating away
+  // mid-request (closing the panel via a route change, not just dismiss())
+  // let the fetch run to completion in the background: a wasted real LLM
+  // call on the backend, and a setExplainState call racing an unmounted
+  // component. Aborting here is a no-op if nothing is in flight.
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort()
+    }
+  }, [])
 
   const explainPoint = useCallback((point: ExplainablePoint) => {
     abortControllerRef.current?.abort() // supersede whatever was in flight
