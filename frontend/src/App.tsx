@@ -195,10 +195,29 @@ const ViewportPanel: React.FC<VectorViewportProps> = (viewportProps) => (
 // after index.css's <link> in document order, so for the shared
 // ::-webkit-scrollbar selectors it's what actually wins today, and
 // scrollbar-width (Firefox) has no equivalent in index.css at all.
-
-const GlobalStyles: React.FC = () => (
+//
+// 2026-08-29: `body { overflow: hidden }` moved HERE from index.css. This
+// component only ever mounts on the operational canvas (main.tsx renders
+// <App/>; landing/main.tsx renders <LandingApp/> and never touches this
+// file) — index.css is shared by both entry points, so a body-level
+// scroll lock declared there silently broke scrolling on the landing
+// page too (a normal tall page, not a fixed-viewport scene). Scoping it
+// here, same specificity as the body rule in index.css but later in
+// document order (this <style> tag renders after index.css's <link>),
+// keeps the operational app's fixed-viewport behavior identical while
+// freeing the landing page to scroll normally. Exported so
+// App.scroll.test.ts can assert this rule actually renders, and
+// index.css itself no longer declares the opposite of what this file
+// says — see that test for the regression this fixes.
+export const GlobalStyles: React.FC = () => (
   <style>{`
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+
+    /* Fixed-viewport 3D scene — the operational canvas itself never
+       needs page-level scroll (#iye-app-root below already clips its
+       own content at height:100vh), and locking body here prevents any
+       stray overflow from ever producing a page scrollbar behind it. */
+    body { overflow: hidden; }
 
     /* Hairline blush scrollbar — never a default gray OS scrollbar on the
        black field. Chosen over fully-hidden because the sidebar has no

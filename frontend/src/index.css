@@ -39,6 +39,19 @@ html {
   background: var(--iye-bg);
 }
 
+/* NOT `overflow: hidden` here (2026-08-29 sprint) — this stylesheet is
+   shared by BOTH entry points (main.tsx's operational app.html AND
+   landing/main.tsx's marketing index.html, see each file's own import).
+   A body-level scroll lock only makes sense for the operational canvas,
+   which is a fixed-viewport 3D scene (`#iye-app-root` in App.tsx already
+   declares its own `height: 100vh; overflow: hidden`, so nothing there
+   depends on the body rule anyway) — but the landing page is a normal
+   tall page (`.landing-page` in landing.css uses `min-height: 100vh`,
+   expecting ordinary document scroll) with real content below the fold.
+   `overflow: hidden` here silently made the ENTIRE landing page
+   unscrollable — confirmed as the root cause of "I can't scroll the
+   screen." The operational app's own scroll-lock is now applied
+   narrowly, in App.tsx's GlobalStyles (only rendered on that page). */
 body {
   height: 100%;
   background: var(--iye-bg);
@@ -54,7 +67,6 @@ body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  overflow: hidden;
 }
 
 #root {
