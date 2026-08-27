@@ -44,6 +44,19 @@ class RaggedMatrixError(ValueError):
     """Raised when input rows don't all have the same length."""
 
 
+class NonFiniteValueError(RaggedMatrixError):
+    """Raised when a column is syntactically all-numeric (every cell parses
+    as a float) but at least one cell is non-finite (NaN/Infinity, or a
+    literal like "1e400" that overflows float range). Deliberately a
+    *separate* case from genuine categorical/free-text data: silently
+    downgrading a corrupted numeric column to one-hot/frequency encoding
+    (the pre-2026-08-27 behavior) hid the corruption instead of surfacing
+    it. Subclasses RaggedMatrixError (itself a ValueError) so every
+    existing `except RaggedMatrixError` call site — main.py's ingestion
+    handler in particular — already catches this as a structured 422
+    without needing its own new except clause."""
+
+
 # ─── Shared helpers (mirror parseMatrix.ts's isFiniteNumberString / zScoreNormalize) ──
 
 
@@ -53,6 +66,21 @@ def _is_finite_number_string(s: str) -> bool:
         return False
     try:
         return math.isfinite(float(s))
+    except ValueError:
+        return False
+
+
+def _parses_as_number(s: str) -> bool:
+    """True iff s is syntactically a float — finite or not (inf/nan/an
+    overflowing literal like "1e400" all parse successfully; only used to
+    distinguish "this is corrupted numeric data" from "this is genuinely
+    categorical/free-text data" in the classification step below."""
+    s = s.strip()
+    if s == "":
+        return False
+    try:
+        float(s)
+        return True
     except ValueError:
         return False
 
@@ -70,15 +98,43 @@ def _cell_to_str(v: Any) -> str:
 
 
 def _zscore(values: list[float]) -> list[float]:
+    """numpy-backed rather than pure-Python summation: a pure-Python
+    `sum((v - mean) ** 2 ...)` raises an uncaught OverflowError once a
+    value's square exceeds ~1.8e308 (real-world reachable — e.g. any
+    column with values around 1e200), which used to propagate out of
+    vectorize_matrix as an unhandled 500. numpy's float64 arithmetic
+    doesn't raise on overflow; it produces inf/nan instead, which we
+    explicitly check for and reject below rather than silently returning
+    a poisoned z-score to every downstream consumer."""
     n = len(values)
     if n == 0:
         return values
-    mean = sum(values) / n
-    variance = sum((v - mean) ** 2 for v in values) / n
-    std = math.sqrt(variance)
+    arr = np.asarray(values, dtype=np.float64)
+    # Squaring anything past ~1.34e154 overflows float64 range during
+    # variance computation, even though every individual value here is
+    # itself perfectly finite (each already passed _is_finite_number_string
+    # to get this far). Verified this is reachable, not theoretical: a
+    # column of [1e200, 2e200, 3e200, 4.0] doesn't raise anything and
+    # doesn't produce inf/nan either — mean and std both silently overflow
+    # to inf, and (finite - inf) / inf silently evaluates to +/-0.0 for
+    # every row, which passes an isfinite() check while being numeric
+    # garbage (every point collapses to the same fake "zero deviation").
+    # Caught here, before that can happen, rather than after.
+    if np.any(np.abs(arr) > 1e150):
+        raise NonFiniteValueError(
+            "column values are too large in magnitude to normalize "
+            "without numeric overflow during variance computation"
+        )
+    std = arr.std()
     if std == 0:
         return [0.0] * n
-    return [(v - mean) / std for v in values]
+    result = (arr - arr.mean()) / std
+    if not np.all(np.isfinite(result)):
+        raise NonFiniteValueError(
+            "column values are too large to normalize without numeric "
+            "overflow (z-score computation produced a non-finite result)"
+        )
+    return result.tolist()
 
 
 # ─── Categorical classification & encoding ─────────────────────────────────────
@@ -248,10 +304,22 @@ def vectorize_matrix(
         [_cell_to_str(raw_rows[r][c]) for r in range(row_count)] for c in range(total_columns)
     ]
 
-    kinds: list[ColumnKind] = [
-        "numeric" if all(_is_finite_number_string(v) for v in cells) else _classify_non_numeric_column(cells)
-        for cells in column_cells
-    ]
+    kinds: list[ColumnKind] = []
+    for cells in column_cells:
+        if all(_is_finite_number_string(v) for v in cells):
+            kinds.append("numeric")
+        elif all(_parses_as_number(v) for v in cells):
+            # Every cell is syntactically a number, so this is corrupted
+            # numeric data (NaN/Infinity/overflow), not categorical data —
+            # raise instead of silently one-hot/frequency-encoding numbers
+            # as opaque categories (2026-08-27 sprint; see NonFiniteValueError).
+            bad = next(v for v in cells if not _is_finite_number_string(v))
+            raise NonFiniteValueError(
+                f"column contains a non-finite numeric value ({bad!r}) — "
+                "refusing to silently treat it as categorical data"
+            )
+        else:
+            kinds.append(_classify_non_numeric_column(cells))
 
     numeric_columns = sum(1 for k in kinds if k == "numeric")
     encoded_categorical_columns = sum(1 for k in kinds if k in ("onehot", "frequency"))

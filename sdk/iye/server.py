@@ -1,8 +1,19 @@
 """
-iye.server — WebSocket streaming infrastructure for the IYE anomaly engine.
+iye.server — Pydantic wire-format contracts (Coordinate3D, FeatureAttribution,
+VectorFramePayload, etc.) shared between this SDK and the shipped backend
+(backend/app/api/main.py imports these directly). Those models ARE the
+live contract and are used in production.
 
-Exposes a StreamHub singleton for broadcasting VectorFramePayload messages
-to all connected frontend clients via ws://<host>:<port>/ws/vectors.
+The StreamHub/get_hub/ws_app/vector_stream_endpoint broadcast
+infrastructure below is NOT — it's a legacy, never-deployed alternative.
+The actual shipped backend (backend/app/api/main.py) implements its own
+separate StreamHub and /stream endpoint and never imports this module's
+StreamHub, get_hub, or vector_stream_endpoint (confirmed via grep across
+the whole repo, 2026-08-27 sprint audit — the only imports of this module
+anywhere pull the Pydantic models above, never these). Kept in place
+rather than deleted only because deleting working code with no
+replacement mid-audit is a bigger, riskier change than documenting it —
+worth an explicit follow-up decision on whether to delete it outright.
 """
 
 from __future__ import annotations
@@ -10,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Literal, Optional, Dict
+from typing import Any, Dict, Literal, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
@@ -35,7 +46,15 @@ class FeatureAttribution(BaseModel):
     field's several category columns) to the one human-readable field
     that actually produced them."""
 
-    name: str
+    # max_length=200 (2026-08-27 sprint): `name` is echoed back by the
+    # frontend from a prior frame and lands verbatim, unsanitized, inside
+    # the Ollama narrative prompt (backend/app/api/main.py's
+    # generate_anomaly_explanation). A legitimate column name is a handful
+    # of words; capping it bounds both prompt-injection surface and
+    # prompt-size amplification from a hand-crafted request to
+    # /api/canvas/anomaly/explain (this endpoint takes no auth, so anyone
+    # who can reach it can set this field to anything).
+    name: str = Field(max_length=200)
     z_score: float
 
 

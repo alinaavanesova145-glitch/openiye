@@ -186,3 +186,101 @@ def test_is_fully_numeric_false_for_any_string_cell():
 
 def test_is_fully_numeric_false_for_bool_cell():
     assert not encoding.is_fully_numeric([[1, True]])
+
+
+# ─── Non-finite numeric values (2026-08-27 sprint) ──────────────────────────
+#
+# Before this sprint, a column where every cell parsed as a number but one
+# was non-finite (an overflowing literal like "1e400", or a magnitude that
+# overflows during _zscore's variance computation) was silently downgraded
+# to categorical one-hot/frequency encoding, with no warning anywhere. Now
+# it raises NonFiniteValueError (a RaggedMatrixError subclass, so every
+# existing `except encoding.RaggedMatrixError` call site already handles
+# it as a structured error) instead of corrupting the column silently.
+
+
+def test_single_overflowing_literal_raises_instead_of_reclassifying_column():
+    with pytest.raises(encoding.NonFiniteValueError):
+        encoding.vectorize_matrix([[1.0], [2.0], [3.0], [1e400]])
+
+
+def test_non_finite_value_error_is_a_ragged_matrix_error():
+    """So callers that only catch RaggedMatrixError (e.g. main.py's
+    ingestion handler) already handle this new case for free."""
+    assert issubclass(encoding.NonFiniteValueError, encoding.RaggedMatrixError)
+
+
+def test_extreme_magnitude_column_mixed_with_categorical_raises_cleanly():
+    """Each individual value (~1e200) is itself finite, but squaring it
+    during _zscore's variance computation overflows float64 range —
+    previously an uncaught OverflowError (propagated as a raw unhandled
+    500 through the backend); now a clean NonFiniteValueError."""
+    with pytest.raises(encoding.NonFiniteValueError):
+        encoding.vectorize_matrix(
+            [[1e200, "red"], [2e200, "blue"], [3e200, "red"], [4.0, "green"]]
+        )
+
+
+def test_genuine_categorical_column_containing_the_word_nan_is_unaffected():
+    """A real categorical value that happens to be the text "nan" among
+    otherwise-ordinary words must NOT trip the non-finite guard — only a
+    column where *every* cell is syntactically numeric is affected."""
+    m, summary = encoding.vectorize_matrix(
+        [[1.0, "nan"], [2.0, "apple"], [3.0, "banana"], [4.0, "cherry"]]
+    )
+    assert m.shape == (4, 5)
+    assert summary.numeric_columns == 1
+    assert summary.encoded_categorical_columns == 1
+
+
+def test_ordinary_mixed_numeric_and_categorical_still_works():
+    m, summary = encoding.vectorize_matrix(
+        [[1.0, "red"], [2.0, "blue"], [3.0, "red"], [4.0, "green"]]
+    )
+    assert m.shape == (4, 4)
+    assert summary.numeric_columns == 1
+
+
+def test_zscore_rejects_extreme_magnitude_before_silently_returning_zeros():
+    """Direct unit test of the _zscore helper itself: without the magnitude
+    guard, mean/std both silently overflow to inf and (finite - inf) / inf
+    evaluates to +/-0.0 for every element — a finite-looking result that is
+    actually numeric garbage (every point reads as "zero deviation").
+    Confirms that failure mode is caught before it can happen."""
+    with pytest.raises(encoding.NonFiniteValueError):
+        encoding._zscore([1e200, 2e200, 3e200, 4.0])
+
+
+def test_zscore_normal_values_unaffected():
+    result = encoding._zscore([1.0, 2.0, 3.0, 4.0])
+    assert all(math.isfinite(v) for v in result)
+    assert np.isclose(sum(result), 0.0, atol=1e-9)
+
+
+# ─── Packaging: iye must be importable without fastapi (2026-08-27 sprint) ──
+
+
+def test_import_iye_does_not_require_fastapi():
+    """sdk/iye/__init__.py used to unconditionally `from .server import ...`
+    at module load, and iye/server.py imports fastapi unconditionally --
+    so `import iye` failed in a clean env with only sdk/setup.py's declared
+    dependencies (fastapi was never one of them), even for a pure client
+    script that only ever calls iye.show()/iye.explain_anomaly() and has
+    no reason to need fastapi at all. That unused import (nothing in
+    __init__.py actually referenced Coordinate3D/StreamHub/VectorFramePayload/
+    get_hub) is now removed. This test simulates fastapi being absent by
+    poisoning sys.modules in a fresh subprocess, so it fails the way a real
+    fastapi-less install would if the regression reappears."""
+    import os
+    import subprocess
+    import sys as _sys
+
+    sdk_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "sdk"))
+    script = (
+        "import sys; sys.modules['fastapi'] = None; "
+        f"sys.path.insert(0, {sdk_path!r}); "
+        "import iye; assert callable(iye.show); print('OK')"
+    )
+    result = subprocess.run([_sys.executable, "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "OK" in result.stdout

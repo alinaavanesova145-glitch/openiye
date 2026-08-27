@@ -8,7 +8,12 @@ Internally orchestrates:
     1. Dimensionality reduction (UMAP or zero-pad pass-through)
     2. Density-based clustering (HDBSCAN)
     3. Statistical anomaly detection (absolute Z-scores, 2.5σ threshold)
-    4. Non-blocking WebSocket frame broadcast via StreamHub
+    4. HTTP POST of the resulting frame to the locally-running IYE backend
+       (see show()'s _post_to_active_backend) — the backend itself, not
+       this SDK, owns the actual WebSocket broadcast to connected browser
+       clients (backend/app/api/main.py's StreamHub). iye.server.StreamHub
+       is a separate, legacy implementation that nothing in this package
+       or the shipped backend ever instantiates — see its own docstring.
 """
 
 from __future__ import annotations
@@ -17,15 +22,13 @@ import asyncio
 import logging
 import threading
 import uuid
-import requests
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
+import requests
 from numpy.typing import NDArray
-
-from .server import Coordinate3D, StreamHub, VectorFramePayload, get_hub
 
 logger = logging.getLogger("iye")
 
