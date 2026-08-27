@@ -3661,3 +3661,275 @@ f4ae015 test(frontend): real R3F mount coverage + close remaining test gaps
 
 Pushed to `origin/main` as part of this sprint (this session has GitHub
 push access — confirmed in prior sprints).
+
+
+# 2026-08-29 — Sprint: full-stack audit + LAN-only decision, security/correctness fixes
+
+Different trigger from every prior entry: not a self-directed audit, but
+an explicit ask from Alina after looking at the live site herself
+("ti testirovshik i fullstack engineer... razverni moy proekt polnostyu
+i naydi vse bagi i gap-i" -- act as tester + fullstack engineer, stand
+up a backend, find every bug/gap that could exist). Phase 0 below is
+that audit; everything after it is the fix-list it produced, filtered
+by one decision Alina made explicitly when asked how to handle the
+backend: **keep it LAN-only**, not a public deploy. That decision is why
+the deploy-readiness findings (Dockerfile, public CORS, single-instance
+state, hosting the Ollama dependency) are out of scope here by explicit
+choice, not by oversight -- the security/correctness fixes below are the
+ones worth doing "in any case," independent of hosting target, and are
+the full content of this sprint.
+
+## Phase 0 -- full-stack audit
+
+Four independent passes: three parallel subagent audits (backend, SDK,
+frontend), plus manual synthesis of infra/deploy readiness. Full
+findings, severity-ranked, plus the three realistic public-deploy paths
+(A: stay LAN-only / B: swap Ollama for a hosted LLM API / C: rent a VPS
+with real RAM) are written up in full in
+`docs/fullstack_audit_2026-08-27.md` -- not reproduced here, only acted
+on. One audit claim was independently corrected before it reached
+Alina: an automated pass flagged "no `.gitignore` exists," which is
+false -- verified directly that one exists and is thorough (excludes
+`.env*` properly).
+
+**Not fixed this sprint, flagged here because it's the most severe
+finding in the whole audit and the decision to leave it deserves to be
+visible, not buried**: `StreamHub.broadcast()` (`main.py`) fans every
+uploaded frame out to *every* connected WebSocket client, with no
+auth or session scoping. On a LAN today that's "you talking to your own
+browser tab," so it doesn't bite -- but it is the single blocking issue
+before this backend could ever go public, and it stays open under the
+LAN-only decision. Anyone revisiting path B or C later should fix this
+first, before anything else in that column.
+
+## Phase 1 -- SDK: silent data corruption on numeric overflow
+
+`vectorize_matrix`'s z-score/classification path had two related bugs,
+both confirmed with direct reproduction before fixing: one overflowing
+or malformed cell (`1e400`) silently reclassified an entire clean
+numeric column as categorical one-hot dummies with no warning; values
+around `1e200` mixed with a categorical column produced *finite-looking*
+garbage (`-0.0`/`0.0` for every point) because the overflow happened
+during intermediate mean/std computation and settled into something
+finite but meaningless -- a post-hoc `isfinite()` check alone does not
+catch this, confirmed by testing that exact fix first and watching it
+fail. Fixed with a new `NonFiniteValueError` (subclasses the existing
+`RaggedMatrixError`, so `main.py`'s ingestion handler catches it for
+free) and a pre-computation magnitude guard.
+
+Separately: `iye/__init__.py` imported `iye/server.py`'s `StreamHub` at
+module load for no reason nothing in the package used it for, which made
+`import iye` unconditionally require `fastapi` -- never declared in
+`sdk/setup.py`, breaking a bare SDK install. Import removed.
+`FeatureAttribution.name` got a length cap it didn't have.
+
+8 new tests, including a subprocess-based one that poisons
+`sys.modules['fastapi']` to prove the import genuinely doesn't need it,
+not just that `setup.py` looks right.
+
+## Phase 2 -- backend: request limits, non-finite rejection, bounded queue, non-blocking capture
+
+- No request size limits on `/api/canvas/vectors` at all -- a
+  multi-million-element array went straight into UMAP/HDBSCAN,
+  unbounded memory/CPU per request. Added `Field(max_length=...)` caps
+  plus a new per-row width validator (a wide-but-short payload could
+  dodge a row-count-only limit).
+- A JSON body containing `NaN`/`Infinity` (both Python's `json` module
+  and JS engines accept these as literals by default) passed the
+  existing `isinstance(v, float)` fast-path and went straight into
+  computation. Added an explicit `np.isfinite` guard at ingestion.
+- Raw exception text was returned to callers on unanticipated
+  numpy/UMAP/HDBSCAN/narrative errors. Now generic; full detail still
+  goes to `logger.exception`.
+- The narrative-task concurrency limiter (4 at a time) had no cap on
+  how many requests could *queue* behind it. Added
+  `MAX_PENDING_NARRATIVE_TASKS=16` -- over the cap, a new task is
+  dropped (logged) instead of queuing unboundedly.
+- `capture_frame()` (opt-in via `IYE_CAPTURE_PATH`) did synchronous disk
+  I/O directly on the event loop, blocking every other in-flight
+  request. Wrapped in `asyncio.to_thread`. (Its separate lack of a
+  file-size cap/rotation is not fixed -- see Remaining known gaps.)
+
+New/updated tests across `test_ingest_validation.py`,
+`test_narrative_lifecycle.py`, `test_anomaly_explain.py`. One test
+needed a `_post_raw_json` helper: httpx's `TestClient(json=...)` kwarg
+uses `allow_nan=False` and refuses to even serialize a `NaN` in the test
+itself, which is a test-client limitation, not the server behavior
+being tested -- worked around by sending raw bytes instead, reproducing
+what a real non-Python HTTP client could actually send.
+
+## Phase 3 -- backend: dead duplicate routes, and a test file that was silently testing them
+
+Found while investigating a smaller cleanup item. `backend/app/api/
+__init__.py` built its own separate `FastAPI()` app with a duplicate
+`/vectors` route and a duplicate `/health` route -- registered nowhere
+(only `app.api.main:app` is ever launched, confirmed via `grep`), and
+permanently unreachable even if it had been mounted: route shadowing
+means identically-pathed handlers registered via `include_router()`
+after the real `@app.get/post` decorators never get reached in
+FastAPI/Starlette, confirmed both by reading source order and by direct
+reproduction.
+
+The real discovery, not an original audit finding: `backend/tests/
+test_api.py` imported `from app.api import app` -- the dead app, not
+`app.api.main:app`. Every test in that file had been exercising
+unreachable legacy code, providing false confidence instead of real
+coverage, for who knows how many prior sprints. Fixed the import and
+adjusted assertions for the real handler's actual response shape
+(health endpoint has more fields; `/vectors` defaults `dim=6`, not the
+dead handler's `3`). `routes/health.py` deleted outright (its only
+route was 100% dead after this); `routes/canvas.py`'s dead `/vectors`
+handler removed, keeping the live `GET /mesh`.
+
+## Phase 4 -- frontend: no error boundary anywhere
+
+Confirmed exactly as the audit found it: `App.tsx` only wrapped the 3D
+viewport in `<Suspense>`, which covers the loading state, not a
+render-phase throw. An R3F error from malformed geometry not already
+guarded elsewhere, or the lazy chunk simply failing to load on a flaky
+connection, unmounted the *entire* React tree -- a silent white screen
+for both the canvas and the sidebar, no recovery path. New
+`ErrorBoundary` class component (no hook equivalent exists), styled to
+match the existing theme, with a reload button; wrapped around the 3D
+viewport in `App.tsx`, and around the top-level `<App />` and
+`<LandingApp />` roots so a crash anywhere still leaves a recoverable
+UI. 3 new tests.
+
+## Phase 5 -- frontend: two silent data-integrity bugs
+
+1. A malformed WebSocket frame with a ragged coordinate sub-array
+   (`[1,2]` instead of `[x,y,z]`) wasn't rejected -- it silently
+   desynced every point after it in that frame. New `pushTriple()`
+   helper validates shape before pushing, throwing otherwise; caught by
+   the existing `try/catch` in `ws.onmessage`, the same path already
+   handling unparseable JSON.
+2. A JSON upload with a column literally named `__proto__` silently
+   vanished from the parsed matrix: `flattenObject`'s plain `{}`
+   accumulator hit the inherited `Object.prototype` accessor instead of
+   creating a real own property. `Object.create(null)` fixes it. Not a
+   security issue -- JS's own literal-vs-computed-key semantics already
+   prevented anything unsafe here -- a silent-data-loss bug, confirmed
+   with a test using computed-key syntax to correctly simulate how a
+   real parsed-JSON object actually gets such a key.
+
+3 new tests total.
+
+## Phase 6 -- frontend: wasted LLM calls on unmount, misconfigured VITE_API_BASE
+
+Neither `useAnomalyExplain` nor `useFixtureAnomalyExplain` canceled its
+in-flight request on unmount -- only on being superseded by a newer
+click or an explicit `dismiss()`. Navigating away mid-request (a route
+change while the narrative panel was open) let the real hook's fetch
+run to completion in the background: a wasted real LLM call on the
+backend. Added a `useEffect` cleanup to each -- aborts the
+`AbortController` in the real hook, clears the pending `setTimeout` in
+the fixture hook.
+
+Separately: a `VITE_API_BASE`/`VITE_WS_BASE` override with no
+`http(s)://` scheme (e.g. `192.168.1.4:8050` instead of
+`http://192.168.1.4:8050`) silently produced a fetch URL resolved as
+relative-to-page and a WebSocket URL that throws a `SyntaxError` --
+both manifesting as a permanently-failing reconnect loop
+indistinguishable from "the backend just isn't running yet." Added a
+pure `validateApiBaseOverride` helper that logs a specific, actionable
+`console.warn` when the override is missing a scheme -- no change to
+the actual derived value for a correctly-configured override.
+
+9 new tests total across both hooks and `apiConfig`.
+
+## An environment issue worth recording, not a project bug
+
+`npx vitest run` initially failed outright with "Cannot find native
+binding" for `@rolldown/binding-wasm32-wasi` -- the checked-in
+`node_modules` only had `@rolldown/binding-darwin-arm64` (installed
+natively on Alina's Mac), but this sprint's commands ran inside the
+device-bridge's Linux VM wrapper (`uname -sm` -> `Linux aarch64`), which
+needed its own native binding. Fixed with a plain `npm install` (not
+`ci`, not preceded by `rm -rf node_modules`) so it only *added* the
+missing `linux-arm64-gnu`/`linux-arm64-musl` bindings alongside the
+existing `darwin-arm64` one -- confirmed both `package.json` and
+`package-lock.json` are untouched (`git diff` empty) and the
+`darwin-arm64` binding is still present, so Alina's own native `npm run
+dev` on her Mac is unaffected. Deliberately did **not** run the
+established from-scratch gate (`rm -rf node_modules && npm ci`) this
+sprint -- inside this Linux VM that would fetch only Linux-platform
+optional dependencies and silently strip the `darwin-arm64` one her own
+machine needs.
+
+## Full verification, this sprint's final state
+
+| Check | Result |
+|---|---|
+| `vitest run` (frontend) | **259 passed (259)** -- was 243 at the end of the last recorded sprint (2026-08-28) |
+| `tsc --noEmit` | clean |
+| `eslint . --max-warnings 0` | clean (two new errors caught and fixed in `ErrorBoundary.tsx` before this: an unused `eslint-disable` directive, and an unescaped apostrophe in JSX text) |
+| `npm run build` | clean |
+| `pytest tests/ -q` (backend) | **141 passed (141)** -- was 124 at the end of the last recorded sprint |
+| `ruff check backend/ sdk/` | 35 pre-existing issues, all confined to `sdk/iye/__init__.py` / `sdk/iye/server.py` (deprecated `Optional[X]`/`Dict` typing, a couple of blind `except Exception`, an unsorted `__all__`) -- none introduced this sprint, none in files this sprint's fixes touched beyond a docstring/import removal. Not CI-gated. Left alone deliberately, same call as every prior sprint that's touched these two files: real debt, but out of scope for a security/correctness pass. |
+
+## Files touched this sprint
+
+**Created**: `docs/fullstack_audit_2026-08-27.md`,
+`frontend/src/lib/ErrorBoundary.tsx` (+`.test.tsx`).
+
+**Modified**: `sdk/iye/encoding.py`, `sdk/iye/__init__.py`,
+`sdk/iye/server.py`, `sdk/setup.py`,
+`backend/tests/test_encoding_module.py`, `backend/app/api/main.py`,
+`backend/tests/test_ingest_validation.py`,
+`backend/tests/test_narrative_lifecycle.py`,
+`backend/tests/test_anomaly_explain.py`, `backend/app/api/__init__.py`,
+`backend/app/api/routes/canvas.py`, `backend/tests/test_api.py`,
+`frontend/src/App.tsx`, `frontend/src/main.tsx`,
+`frontend/src/landing/main.tsx`,
+`frontend/src/canvas/math/useVectorStream.ts` (+`.test.ts`),
+`frontend/src/canvas/upload/parseMatrix.ts` (+`.test.ts`),
+`frontend/src/canvas/math/useAnomalyExplain.ts` (+`.test.ts`),
+`frontend/src/landing/useFixtureAnomalyExplain.ts` (+`.test.ts`),
+`frontend/src/lib/apiConfig.ts` (+`.test.ts`).
+
+**Deleted**: `backend/app/api/routes/health.py`.
+
+## Remaining known gaps (deliberately not touched, and why)
+
+1. **[Critical, still open] `StreamHub.broadcast()` has no auth/session
+   scoping** -- see Phase 0. Deliberately not fixed: it's a bigger
+   architectural change (per-session channels, not a quick patch), and
+   the LAN-only decision means it isn't actively exploitable today. It
+   is the first thing to fix if public deploy (path B or C from the
+   audit doc) is ever revisited.
+2. **Backend finding #8: the temporal engine's actual anomaly-regime
+   logic (spike/velocity/drift classification + hysteresis) has zero
+   real test coverage** -- the one integration test never sends enough
+   frames to leave the "warmup" branch. Not started this sprint;
+   algorithmically subtle enough to deserve its own focused pass rather
+   than a rushed addition here.
+3. **`capture_frame()` still has no file-size cap or rotation** -- only
+   its event-loop-blocking behavior was fixed this sprint (Phase 2).
+   Opt-in feature (`IYE_CAPTURE_PATH`), not exercised in the LAN-only
+   default configuration.
+4. **35 pre-existing ruff issues in `sdk/iye/__init__.py` /
+   `sdk/iye/server.py`** -- see the verification table. Real, not
+   CI-gated, deliberately left alone to avoid unreviewed scope creep
+   beyond this sprint's actual findings.
+5. **Public-deploy readiness (Dockerfile, public CORS allowlist,
+   `0.0.0.0` bind, single-instance in-process state, hosting the Ollama
+   dependency)** -- all real per the Phase 0 audit, all out of scope by
+   Alina's explicit LAN-only decision, not by oversight. Full detail in
+   `docs/fullstack_audit_2026-08-27.md`, Parts 2-4.
+6. **Domain purchase and email remain deliberately out of scope**, per
+   `docs/free_tier_launch_steps.md` -- unchanged from every prior
+   sprint's note on this.
+
+## Commits ready for review
+
+```
+6349e27 fix(sdk): stop silently corrupting data on numeric overflow, drop unconditional fastapi import
+254c4f4 fix(backend): request size limits, non-finite payload rejection, bounded narrative queue, non-blocking capture
+fc36cf5 fix(backend): remove dead duplicate routes/app -- a whole test file was silently testing them
+0fd66c8 fix(frontend): add app-wide error boundaries -- there were none anywhere
+d9c8f46 fix(frontend): reject ragged WS coordinate frames, preserve a __proto__-named upload column
+2cd2de9 fix(frontend): abort explain requests on unmount, flag a scheme-less VITE_API_BASE
+```
+
+Pushed to `origin/main` as part of this sprint (this session has GitHub
+push access -- confirmed in prior sprints).
