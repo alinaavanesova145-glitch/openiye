@@ -4147,3 +4147,207 @@ d9c8f46 fix(frontend): reject ragged WS coordinate frames, preserve a __proto__-
 
 Pushed to `origin/main` as part of this sprint (this session has GitHub
 push access -- confirmed in prior sprints).
+
+# 2026-08-30 — Sprint: canvas data-integrity fixes, LLM warm-up, plain-English sidebar
+
+A note on this entry's own placement first, in the interest of the same
+honesty this file expects of every sprint: the *previous* "2026-08-30"
+entry above (search this file — it lands right after the 2026-08-28
+entry, immediately before this one's namesake, the 2026-08-29 entry)
+was meant to be appended after the 2026-08-29 entry, at the true end of
+the file, but landed one entry too early instead — almost certainly an
+Edit `old_string` match on the generic "Pushed to `origin/main` ..."
+closing boilerplate that recurs at the end of nearly every entry,
+landing on the wrong occurrence. Left as-is rather than silently
+reordered: reordering past entries, even purely mechanically, is still
+rewriting history this file's own convention says not to touch. Alina
+should decide if it's worth a cleanup pass. This entry is appended at
+the file's actual current end, dated the same day as a second/third
+sprint rather than risk colliding with that mislabeled ordering further.
+
+Four findings from Alina's own source-level investigation (not a fresh
+audit) — acting as tester this time, having actually looked at the code
+and flagged four specific, real problems by file and line number. Each
+confirmed by reading the cited code directly before touching anything.
+
+## Finding 1 — mock placeholder data was indistinguishable from real data
+
+Confirmed exactly as described. `VectorViewport.tsx`'s `buildMockFrame()`
+(150 hardcoded points, fake cluster labels, `anomalyIndices=[12,47,88]`)
+rendered through the identical pipeline as real backend data whenever no
+real frame had arrived yet — same instanced nodes, same hulls, same
+severity-colored, clickable anomaly beacons. The HUD line showed the
+*real* websocket `streamState` ("connected") right next to the *fake*
+point count, so a user could reasonably see "STREAM: connected // POINTS:
+150" before ever uploading anything and mistake it for live analysis.
+Clicking one of the 3 fake anomaly beacons fired a real
+`useAnomalyExplain` request for a `point_index` the backend never
+computed — actively misleading, not just an unlabeled placeholder.
+
+Fixed:
+- The HUD now reads `SAMPLE · NOT LIVE` instead of reusing the `STREAM:
+  {state}` label whenever `hasRealData` is false.
+- Mock nodes, hulls, and beacons all render in a single desaturated gray
+  (`#6b6b72` / `#9a9aa2`) instead of the real pink/cyan/severity palette —
+  `isMockData` threaded down through `TacticalVectorField` ->
+  `InstancedCoreNodes`/`ClusterHulls`/`AnomalyBeacons`/`AnomalyBeacon`.
+- Mock beacons no longer dispatch an explain request on click (the
+  `onClick` handler returns early when `isMockData`) — there is no real
+  point behind them to explain. Their hover tooltip says "sample data —
+  no live analysis behind this point" instead of inviting a click.
+
+Verified live in a real browser against the real running stack
+(`./boot.sh`, Playwright against `localhost:3000/app.html`): before any
+upload, the HUD read `VECTOR VIEWPORT // POINTS: 150 // SAMPLE · NOT
+LIVE` and the canvas rendered uniformly gray geometry; after a real
+`POST /api/canvas/vectors`, it switched to `STREAM: connected` with real
+pink/cyan colors.
+
+## Finding 2 — TracerLines drew nonsense lines to the scene origin for noise points
+
+Confirmed exactly as described, and worse in practice than it sounds:
+`TracerLines` computed a per-cluster centroid to draw each point's tracer
+line toward, but for a point whose cluster label is `-1` (HDBSCAN noise —
+which covers most real anomalies) the centroid lookup was `undefined` and
+the code fell through to `tx, ty, tz = 0, 0, 0` — literally the scene
+origin, not any meaningful point. `ClusterHulls` right above it in the
+same file already had the correct pattern (`if (label < 0) continue`,
+line 233) — `TracerLines` just never got the same treatment.
+
+Fixed by filtering to non-noise points *before* building the segment
+buffer (`tracedIndices = nominalIndices.filter((idx) => (clusterLabels[idx]
+?? -1) >= 0)`), mirroring `ClusterHulls`' own pattern exactly instead of
+computing a segment and then discarding it.
+
+Verified two ways: a new `@react-three/test-renderer` regression test
+(4 points, 2 noise-labeled, asserts exactly 2 segments / 4 vertices, none
+for the noise points), and — the stronger proof — live against the real
+backend. A real uploaded frame whose 16 points HDBSCAN classified
+entirely as noise (`clusters: noise: 16` in the sidebar) rendered *zero*
+tracer lines after the fix; before it, this exact real-world case would
+have drawn 15 lines all converging on the origin — the confusing
+starburst Alina was actually seeing.
+
+## Finding 3 — the interactive explain endpoint had no model warm-up
+
+Confirmed exactly as described. `_startup_llm_healthcheck` only ever hit
+`/api/tags` — confirming Ollama's HTTP server answers, never that a model
+is actually loaded into memory. Loading a freshly-pulled (or
+idle-unloaded) model's weights is a separate, additive multi-GB cost on
+top of generation time, and `EXPLAIN_LLM_TIMEOUT_SECONDS=30.0` was
+calibrated purely from already-warm generation time (~15-22s). A user's
+first-ever click after `ollama pull` would reliably blow that 30s budget
+on model-load time alone — on literally their first interaction with the
+feature — while the sidebar's "llm · ready" badge, driven by that same
+`/api/tags`-only check, told them it was ready.
+
+Added `_warm_up_llm()`: one real, minimal (`"hi"`) `/api/generate` call
+issued from the app's startup `lifespan`. Fire-and-forget
+(`asyncio.create_task`, tracked in `_llm_warmup_task` and canceled on
+shutdown the same way `_pending_narrative_tasks` already is) so a slow or
+absent Ollama can never delay server startup — the health endpoint and
+every route are already serving requests while it runs. Never raises:
+same graceful-degradation discipline as `generate_anomaly_explanation`
+and every other Ollama call in this module. The explain endpoint's
+existing structured `422 llm_unavailable` contract is untouched and
+re-tested — this is additive, not a replacement for the honest-failure
+design.
+
+A real ripple effect, not hypothetical: the warm-up's own `"hi"` prompt
+now always lands in `tests/conftest.py`'s `received_prompts` before a
+`live_backend` test's real request, since it fires unconditionally on
+every subprocess boot. Two existing e2e tests
+(`test_anomaly_explain.py::test_explain_prompt_is_grounded_in_this_points_specific_signal`,
+`test_encoding_summary.py::test_narrative_prompt_mentions_encoding_when_summary_present`)
+asserted `len(received_prompts) == 1` and would have flaked or broken —
+both now filter out `LLM_WARMUP_PROMPT` before asserting on the real
+prompt. Found by actually running the full suite after the change, not
+by inspection.
+
+Verified live: this machine's real Ollama was reachable
+(`./boot.sh` printed "llm ready — Ollama reachable on :11434"), and the
+sidebar's `llm · ready` badge showed correctly in the browser after
+startup, consistent with both the healthcheck and the new warm-up call
+succeeding against it. New `test_llm_warmup.py` (6 tests: success,
+minimal-prompt-not-the-full-narrative-prompt, unreachable, timeout, the
+explain endpoint's contract is unchanged, and a hermetic e2e proof the
+warm-up fires automatically on startup with *no* explain request ever
+sent by the test).
+
+## Finding 4 — the ACTIVE FRAME panel was unreadable to a non-technical user
+
+Confirmed exactly as described. `window_fill`, `z_max`, `velocity`,
+`acceleration`, `drift_slope`, and cluster shorthand like "noise: 59 ·
+c0: 7 · c1: 69" were raw technical outputs with zero interpretation —
+Alina's own words: "there should be an explaining layer for people so
+everyone understands."
+
+Added `summarizeFrameForHumans(frame)`: a deterministic, template-based
+one-or-two-sentence translation of a frame's anomaly count and temporal
+regime (e.g. "1 point is unusual right now. Still gathering enough
+history to judge the trend with confidence." / "The whole pattern has
+been gradually drifting upward over recent frames."). Deliberately pure
+and network-free — the whole point is that it works even when Ollama is
+offline — and rendered via a new "in plain terms" `ExplanationBlock`
+*alongside* the existing LLM-generated "analysis" card, not in place of
+it, per the explicit instruction not to make the numeric-fields layer
+depend on the LLM. Also added short hover-tooltip explanations (native
+`title` attributes, `METRIC_TOOLTIPS`) on each jargon label in the metric
+grid (window_fill, z_max, velocity, acceleration, drift_slope) so a
+glance or hover clarifies each one without a separate glossary page.
+
+7 new pure-function tests covering a nominal/stable frame, a
+single-anomaly frame, a multi-anomaly frame, the explicitly-requested "no
+anomalies but nonzero drift" case (drift direction wording verified both
+signs), a still-warming-up window, and the velocity/acceleration regimes
+each getting distinct wording — plus 2 new rendered-component tests for
+the "in plain terms" block and the tooltip attributes.
+
+Verified live: after a real uploaded frame, the sidebar rendered "in
+plain terms — 1 point is unusual right now. Still gathering enough
+history to judge the trend with confidence." — derived correctly from
+that frame's actual `window_fill=2%`/`regime=warmup`, not a canned string.
+
+## Full verification, this sprint's final state
+
+| Check | Result |
+|---|---|
+| `pytest tests/ -q` (backend) | **168 passed (168)** — was 141 in the last dated entry recorded in the doc's own linear history (the 2026-08-29 entry); the intervening out-of-place "2026-08-30" entry above separately recorded 162 |
+| `vitest run` (frontend) | **275 passed (275)** — was 259 |
+| `tsc --noEmit` | clean |
+| `eslint . --max-warnings 0` | clean |
+| `npm run build` | clean |
+
+## Files touched this sprint
+
+**Created**: `backend/tests/test_llm_warmup.py`,
+`frontend/src/ui/DiagnosticSidebar.summary.test.ts`.
+
+**Modified**: `frontend/src/canvas/VectorViewport.tsx`,
+`frontend/src/canvas/VectorViewport.props-wiring.test.tsx`,
+`frontend/src/canvas/VectorViewport.tactical-field.test.tsx`,
+`backend/app/api/main.py`, `backend/tests/test_anomaly_explain.py`,
+`backend/tests/test_encoding_summary.py`,
+`frontend/src/ui/DiagnosticSidebar.tsx`,
+`frontend/src/ui/DiagnosticSidebar.test.tsx`.
+
+## Remaining known gaps (deliberately not touched, and why)
+
+1. **[Critical, still open] `StreamHub.broadcast()` has no auth/session
+   scoping** — unchanged since Phase 0 of the 2026-08-29 entry. Still not
+   fixed this sprint either: not one of Alina's four findings, and still
+   the bigger architectural change (per-session channels) the LAN-only
+   decision has consistently deferred.
+2. **The pre-existing chronological-ordering mistake in this very file**
+   (this "2026-08-30" entry's own opening note above) — left for Alina to
+   decide, not silently corrected.
+3. **Public-deploy readiness, domain, and email** — still out of scope by
+   the same explicit LAN-only decision as every prior sprint.
+
+## Commits ready for review
+
+```
+a3baa4c fix(frontend): mock canvas data is now visually unmistakable and non-interactive; TracerLines stops drawing bogus lines to noise points
+49a5a5a fix(backend): warm the LLM model into memory at startup, not just check Ollama's HTTP server answers
+737f583 feat(frontend): plain-English "in plain terms" summary and jargon tooltips for the diagnostic sidebar
+```
