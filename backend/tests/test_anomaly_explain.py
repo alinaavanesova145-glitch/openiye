@@ -259,8 +259,12 @@ def test_explain_prompt_is_grounded_in_this_points_specific_signal(live_backend)
     )
     assert response.status_code == 200
 
-    assert len(received_prompts) == 1
-    prompt = received_prompts[0]
+    # Excludes the startup LLM warm-up call's own fixed "hi" prompt
+    # (2026-08-30 sprint) -- it fires automatically on every live_backend
+    # boot, independent of and racing with this test's own request.
+    explain_prompts = [p for p in received_prompts if p != main_module.LLM_WARMUP_PROMPT]
+    assert len(explain_prompts) == 1
+    prompt = explain_prompts[0]
     assert "point #42" in prompt
     assert "cluster 2" in prompt
     assert "100.000" in prompt  # the coordinate value from _valid_explain_request

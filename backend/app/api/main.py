@@ -82,6 +82,41 @@ async def _startup_llm_healthcheck() -> None:
         _set_llm_status("offline")
 
 
+# A freshly-pulled (or idle-unloaded) model's weights aren't in memory just
+# because Ollama's HTTP server answers -- loading multiple GB is a separate,
+# additive cost on top of generation time, and the interactive explain
+# endpoint's 30s budget (EXPLAIN_LLM_TIMEOUT_SECONDS, calibrated from
+# already-warm generation time alone) doesn't account for it. Left unfixed,
+# a user's first-ever click reliably blew that budget on model-load time,
+# producing "Local LLM is unreachable or timed out" on literally their first
+# interaction -- while the sidebar's "llm · ready" badge, driven only by
+# _startup_llm_healthcheck's /api/tags check above, told them it was ready.
+LLM_WARMUP_PROMPT = "hi"
+# Generous: this runs fully off the startup hot path (see lifespan below),
+# so a slow model load only delays how soon the *first* real click would
+# have been warm anyway -- never server startup, and never a user-facing
+# request.
+LLM_WARMUP_TIMEOUT_SECONDS = 120.0
+
+
+async def _warm_up_llm() -> None:
+    """Best-effort: issues one real, minimal /api/generate call so the model
+    is resident in memory before any user-facing request, not just checked
+    for HTTP reachability. Never raises -- Ollama being absent or slow here
+    must not crash the app, same graceful-degradation discipline as every
+    other LLM call in this module."""
+    try:
+        async with httpx.AsyncClient(timeout=LLM_WARMUP_TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                OLLAMA_API_URL,
+                json={"model": "llama3", "prompt": LLM_WARMUP_PROMPT, "stream": False},
+            )
+            _set_llm_status("ready" if response.status_code == 200 else "offline")
+    except Exception as e:
+        logger.info("LLM warm-up call didn't complete (Ollama may be absent): %s", e)
+        _set_llm_status("offline")
+
+
 LLM_FALLBACK_TEXT = "Telemetry Alert: Structural vector variance exceeded nominal Z-score boundary."
 
 
@@ -118,11 +153,25 @@ async def generate_anomaly_explanation(metrics_summary: str, timeout: float = 10
 # ─── FastAPI Application ──────────────────────────────────────────────────────
 
 
+_llm_warmup_task: "Optional[asyncio.Task]" = None
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    global _llm_warmup_task
     await _startup_llm_healthcheck()
+    # Fire-and-forget, scheduled but deliberately never awaited here -- a
+    # slow or absent Ollama must not delay startup (the health endpoint and
+    # every route are already serving requests while this runs). Tracked
+    # (not a bare asyncio.create_task) so shutdown can cancel it cleanly
+    # instead of risking a "Task was destroyed but it is pending" warning,
+    # same discipline as _pending_narrative_tasks below.
+    _llm_warmup_task = asyncio.create_task(_warm_up_llm())
     yield
     await _cancel_pending_narratives()
+    if _llm_warmup_task is not None and not _llm_warmup_task.done():
+        _llm_warmup_task.cancel()
+        await asyncio.gather(_llm_warmup_task, return_exceptions=True)
 
 
 app = FastAPI(

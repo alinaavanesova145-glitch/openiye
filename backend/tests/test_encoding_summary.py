@@ -31,6 +31,7 @@ import requests
 import websockets
 from fastapi.testclient import TestClient
 
+import app.api.main as main_module
 from app.api.main import app
 from tests.conftest import received_prompts
 
@@ -104,8 +105,12 @@ def test_narrative_prompt_mentions_encoding_when_summary_present(live_backend):
             narrative_msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=15))
             assert narrative_msg["type"] == "narrative"
 
-        assert len(received_prompts) == 1
-        prompt = received_prompts[0]
+        # Excludes the startup LLM warm-up call's own fixed "hi" prompt
+        # (2026-08-30 sprint) -- it fires automatically on every live_backend
+        # boot, independent of and racing with this scenario's own request.
+        narrative_prompts = [p for p in received_prompts if p != main_module.LLM_WARMUP_PROMPT]
+        assert len(narrative_prompts) == 1
+        prompt = narrative_prompts[0]
         assert "2 of the 6 source column(s) are encoded categorical" in prompt
         assert "4 of this vector's dimensions are encoded categories, not raw measurements" in prompt
 
