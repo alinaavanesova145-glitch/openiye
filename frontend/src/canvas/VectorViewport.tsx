@@ -130,6 +130,16 @@ function buildMockFrame() {
   return { positions, anomalyIndices: [12, 47, 88], clusterLabels }
 }
 
+// ─── Mock/placeholder visual distinction (2026-08-30 sprint) ─────────────────
+// buildMockFrame's geometry rendered through the exact same pink/cyan/severity
+// palette as real backend data was visually indistinguishable from it — a
+// user could see "STREAM: connected // POINTS: 150" before ever uploading
+// anything and reasonably assume they were looking at live analysis. A
+// single desaturated gray stands in for every real-data color (nodes, hulls,
+// beacons alike) whenever the mock frame is what's actually on screen.
+const MOCK_GEOMETRY_COLOR = '#6b6b72'
+const MOCK_BEACON_COLOR = '#9a9aa2'
+
 // ─── Cluster color (shared by InstancedCoreNodes and ClusterHulls) ────────────
 // Derived from the cluster's own stable label — not iteration/insertion order
 // — so the same logical cluster never flips color between frames with no
@@ -147,6 +157,7 @@ interface CoreNodesProps {
   positions: Float32Array
   nominalIndices: number[]
   clusterLabels: number[]
+  isMockData?: boolean
 }
 
 // Pre-allocated once at a generous fixed capacity (2026-08-28 sprint) —
@@ -169,6 +180,7 @@ const InstancedCoreNodes = memo(function InstancedCoreNodes({
   positions,
   nominalIndices,
   clusterLabels,
+  isMockData = false,
 }: CoreNodesProps) {
   const meshRef = useRef<THREE.InstancedMesh>(null)
   const count = nominalIndices.length || 1
@@ -180,8 +192,8 @@ const InstancedCoreNodes = memo(function InstancedCoreNodes({
     if (!mesh) return
 
     const dummy = new THREE.Object3D()
-    const pink = new THREE.Color(COLORS.pink)
-    const cyan = new THREE.Color(COLORS.cyan)
+    const pink = new THREE.Color(isMockData ? MOCK_GEOMETRY_COLOR : COLORS.pink)
+    const cyan = new THREE.Color(isMockData ? MOCK_GEOMETRY_COLOR : COLORS.cyan)
 
     nominalIndices.forEach((idx, i) => {
       dummy.position.set(positions[idx * 3], positions[idx * 3 + 1], positions[idx * 3 + 2])
@@ -196,7 +208,7 @@ const InstancedCoreNodes = memo(function InstancedCoreNodes({
     mesh.count = nominalIndices.length
     mesh.instanceMatrix.needsUpdate = true
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
-  }, [positions, nominalIndices, clusterLabels])
+  }, [positions, nominalIndices, clusterLabels, isMockData])
 
   return (
     <instancedMesh
@@ -216,6 +228,7 @@ const InstancedCoreNodes = memo(function InstancedCoreNodes({
 interface HullsProps {
   positions: Float32Array
   clusterLabels: number[]
+  isMockData?: boolean
 }
 
 interface HullEntry {
@@ -225,7 +238,11 @@ interface HullEntry {
   color: string
 }
 
-const ClusterHulls = memo(function ClusterHulls({ positions, clusterLabels }: HullsProps) {
+const ClusterHulls = memo(function ClusterHulls({
+  positions,
+  clusterLabels,
+  isMockData = false,
+}: HullsProps) {
   const hulls = useMemo<HullEntry[]>(() => {
     const groups = new Map<number, THREE.Vector3[]>()
     for (let i = 0; i < clusterLabels.length; i++) {
@@ -255,14 +272,14 @@ const ClusterHulls = memo(function ClusterHulls({ positions, clusterLabels }: Hu
           // underlying data change, whenever iteration order shifted (e.g.
           // a point count crossing the >=4 threshold for a different
           // cluster first).
-          color: isClusterCyan(label) ? COLORS.cyan : COLORS.pink,
+          color: isMockData ? MOCK_GEOMETRY_COLOR : isClusterCyan(label) ? COLORS.cyan : COLORS.pink,
         })
       } catch {
         // Degenerate (coplanar) cluster point set — skip hull rendering
       }
     })
     return entries
-  }, [positions, clusterLabels])
+  }, [positions, clusterLabels, isMockData])
 
   useEffect(() => {
     return () => {
@@ -323,13 +340,22 @@ const TracerLines = memo(function TracerLines({
       centroids.set(label, c)
     }
 
-    const segs = new Float32Array(nominalIndices.length * 6)
-    nominalIndices.forEach((idx, i) => {
+    // HDBSCAN noise (clusterLabel < 0 — most real anomalies) has no cluster
+    // centroid to trace toward. Skipped entirely here, mirroring
+    // ClusterHulls' own `if (label < 0) continue` above, rather than falling
+    // through to the scene origin (0,0,0) — a real frame with several noise
+    // points used to draw a confusing starburst of lines all converging on
+    // that arbitrary point, which has no analytical meaning (2026-08-30
+    // sprint, Finding 2).
+    const tracedIndices = nominalIndices.filter((idx) => (clusterLabels[idx] ?? -1) >= 0)
+
+    const segs = new Float32Array(tracedIndices.length * 6)
+    tracedIndices.forEach((idx, i) => {
       const px = positions[idx * 3]
       const py = positions[idx * 3 + 1]
       const pz = positions[idx * 3 + 2]
       const label = clusterLabels[idx] ?? -1
-      const c = label >= 0 ? centroids.get(label) : undefined
+      const c = centroids.get(label)
       const tx = c ? c.x / c.n : 0
       const ty = c ? c.y / c.n : 0
       const tz = c ? c.z / c.n : 0
@@ -399,6 +425,12 @@ interface AnomalyBeaconProps {
   featureAttributions: FeatureAttribution[]
   isSelected: boolean
   onExplainRequest: (point: ExplainablePoint) => void
+  /** True for a beacon drawn from buildMockFrame's placeholder data (2026-08-30
+   *  sprint) — there is no real backend point behind it, so it must be
+   *  visually distinct (muted gray, not severity-colored) and non-interactive:
+   *  clicking it would fire a real explain request for a point_index the
+   *  backend never computed, which can only confuse or produce nonsense. */
+  isMockData: boolean
 }
 
 const AnomalyBeacon = memo(function AnomalyBeacon({
@@ -411,6 +443,7 @@ const AnomalyBeacon = memo(function AnomalyBeacon({
   featureAttributions,
   isSelected,
   onExplainRequest,
+  isMockData,
 }: AnomalyBeaconProps) {
   const meshRef = useRef<THREE.Mesh>(null)
   const materialRef = useRef<THREE.MeshBasicMaterial>(null)
@@ -418,7 +451,7 @@ const AnomalyBeacon = memo(function AnomalyBeacon({
   const [hovered, setHovered] = useState(false)
 
   const severity = maxAbsAxis(pointZScore)
-  const severityColor = computeSeverityColor(severity)
+  const severityColor = isMockData ? MOCK_BEACON_COLOR : computeSeverityColor(severity)
   const severityScale = computeSeverityScale(severity)
 
   useFrame(({ clock }) => {
@@ -458,7 +491,7 @@ const AnomalyBeacon = memo(function AnomalyBeacon({
         onPointerOver={(e) => {
           e.stopPropagation()
           setHovered(true)
-          document.body.style.cursor = 'pointer'
+          document.body.style.cursor = isMockData ? 'auto' : 'pointer'
         }}
         onPointerOut={(e) => {
           e.stopPropagation()
@@ -467,6 +500,10 @@ const AnomalyBeacon = memo(function AnomalyBeacon({
         }}
         onClick={(e) => {
           e.stopPropagation()
+          // No real backend point exists behind a mock beacon — sending an
+          // explain request for it can only confuse the user or produce a
+          // nonsense answer (see AnomalyBeaconProps.isMockData above).
+          if (isMockData) return
           onExplainRequest({
             pointIndex: anomalyIndex,
             coordinates: { x: position[0], y: position[1], z: position[2] },
@@ -488,7 +525,7 @@ const AnomalyBeacon = memo(function AnomalyBeacon({
           <Html position={[0, 1.8, 0]} center distanceFactor={9} style={{ pointerEvents: 'none' }}>
             <div className="beacon-tooltip">
               <div className="beacon-tooltip-header">
-                <span>ANOMALY #{anomalyIndex}</span>
+                <span>{isMockData ? 'SAMPLE · NOT LIVE' : `ANOMALY #${anomalyIndex}`}</span>
                 <span
                   className="regime-tag"
                   style={{
@@ -521,7 +558,11 @@ const AnomalyBeacon = memo(function AnomalyBeacon({
                   {resolveExplanationDisplay(tooltipInfo.status, tooltipInfo.explanation)}
                 </p>
               )}
-              <p className="beacon-tooltip-hint">click for this point&rsquo;s narrative</p>
+              <p className="beacon-tooltip-hint">
+                {isMockData
+                  ? 'sample data — no live analysis behind this point'
+                  : "click for this point's narrative"}
+              </p>
             </div>
           </Html>
         )}
@@ -550,6 +591,7 @@ interface BeaconsProps {
   tooltipInfo: BeaconTooltipInfo
   selectedPointIndex: number | null
   onExplainRequest: (point: ExplainablePoint) => void
+  isMockData?: boolean
 }
 
 const EMPTY_Z_SCORE: VectorCoordinate3D = { x: 0, y: 0, z: 0 }
@@ -565,6 +607,7 @@ const AnomalyBeacons = memo(function AnomalyBeacons({
   tooltipInfo,
   selectedPointIndex,
   onExplainRequest,
+  isMockData = false,
 }: BeaconsProps) {
   const pointCount = positions.length / 3
   const validIndices = useMemo(
@@ -601,6 +644,7 @@ const AnomalyBeacons = memo(function AnomalyBeacons({
           featureAttributions={pointFeatureAttributions[idx] ?? EMPTY_FEATURE_ATTRIBUTIONS}
           isSelected={selectedPointIndex === idx}
           onExplainRequest={onExplainRequest}
+          isMockData={isMockData}
         />
       ))}
     </>
@@ -619,6 +663,13 @@ export interface TacticalFieldProps {
   tooltipInfo: BeaconTooltipInfo
   selectedPointIndex: number | null
   onExplainRequest: (point: ExplainablePoint) => void
+  /** True when `positions`/`anomalyIndices`/`clusterLabels` are
+   *  buildMockFrame's placeholder geometry, not real backend data
+   *  (2026-08-30 sprint) — see AnomalyBeaconProps.isMockData. Defaults to
+   *  false so every existing real-data caller (including the landing page's
+   *  fixture demo, which is deliberately real fixture data, not this
+   *  pre-connection placeholder) is unaffected. */
+  isMockData?: boolean
 }
 
 /** Exported (2026-07-30 sprint) so the marketing landing page's fixture-data
@@ -635,6 +686,7 @@ export const TacticalVectorField = memo(function TacticalVectorField({
   tooltipInfo,
   selectedPointIndex,
   onExplainRequest,
+  isMockData = false,
 }: TacticalFieldProps) {
   const anomalySet = useMemo(() => new Set(anomalyIndices), [anomalyIndices])
   const nominalIndices = useMemo(() => {
@@ -654,8 +706,9 @@ export const TacticalVectorField = memo(function TacticalVectorField({
         positions={positions}
         nominalIndices={nominalIndices}
         clusterLabels={clusterLabels}
+        isMockData={isMockData}
       />
-      <ClusterHulls positions={positions} clusterLabels={clusterLabels} />
+      <ClusterHulls positions={positions} clusterLabels={clusterLabels} isMockData={isMockData} />
       <TracerLines
         positions={positions}
         nominalIndices={nominalIndices}
@@ -671,6 +724,7 @@ export const TacticalVectorField = memo(function TacticalVectorField({
         tooltipInfo={tooltipInfo}
         selectedPointIndex={selectedPointIndex}
         onExplainRequest={onExplainRequest}
+        isMockData={isMockData}
       />
     </>
   )
@@ -816,7 +870,8 @@ export default function VectorViewport({
       >
         {/* eslint-disable-next-line react/jsx-no-comment-textnodes -- "//" is
                     literal HUD-style display text here, not a stray JS comment */}
-        VECTOR VIEWPORT // POINTS: {pointCount} // STREAM: {streamState}
+        VECTOR VIEWPORT // POINTS: {pointCount} //{' '}
+        {hasRealData ? `STREAM: ${streamState}` : 'SAMPLE · NOT LIVE'}
       </div>
 
       <Canvas camera={{ position: [3, 3, 5] }}>
@@ -833,6 +888,7 @@ export default function VectorViewport({
           tooltipInfo={tooltipInfo}
           selectedPointIndex={selectedPointIndex}
           onExplainRequest={explainPoint}
+          isMockData={!hasRealData}
         />
         <OrbitControls enableZoom={true} makeDefault />
       </Canvas>

@@ -91,6 +91,16 @@ describe('VectorViewport — prop-driven rendering (Phase 1 regression coverage)
     expect(screen.getByText(/POINTS: 150/)).toBeInTheDocument()
   })
 
+  // 2026-08-30 sprint — Finding 1: the mock/placeholder frame used to reuse
+  // the exact same "STREAM: {streamState}" HUD label real data gets, so a
+  // real "STREAM: connected" next to a fake "POINTS: 150" looked exactly
+  // like live analysis. The label must now say so unmistakably instead.
+  it('labels the pre-connection placeholder "SAMPLE · NOT LIVE", not the real STREAM label', () => {
+    render(<VectorViewport {...baseProps({ streamState: 'connected' })} />)
+    expect(screen.getByText(/SAMPLE · NOT LIVE/)).toBeInTheDocument()
+    expect(screen.queryByText(/STREAM: connected/)).not.toBeInTheDocument()
+  })
+
   it('real uploaded/live positions reach the canvas instead of the mock frame — the exact bug this sprint fixed', () => {
     // 4 points via the positions prop -- if VectorViewport still ignored
     // its props (the pre-fix bug), this would show the mock's 150 instead.
@@ -107,8 +117,16 @@ describe('VectorViewport — prop-driven rendering (Phase 1 regression coverage)
     expect(screen.queryByText(/POINTS: 150/)).not.toBeInTheDocument()
   })
 
-  it('the STREAM label reflects the streamState prop', () => {
-    render(<VectorViewport {...baseProps({ streamState: 'connected' })} />)
+  it('the STREAM label reflects the streamState prop, once real data is present', () => {
+    // baseProps() alone has empty positions -> mock mode, which now shows
+    // "SAMPLE · NOT LIVE" instead (see the test above) -- real positions are
+    // what makes this the actual STREAM-label claim it's meant to prove.
+    const positions = new Float32Array([0, 0, 0])
+    render(
+      <VectorViewport
+        {...baseProps({ streamState: 'connected', positions, activeFrame: makeFrame() })}
+      />,
+    )
     expect(screen.getByText(/STREAM: connected/)).toBeInTheDocument()
   })
 

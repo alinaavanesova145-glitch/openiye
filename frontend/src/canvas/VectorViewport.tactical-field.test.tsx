@@ -13,7 +13,7 @@
  * VectorViewport.props-wiring.test.tsx for how that outer layer is
  * covered instead, by swapping Canvas for a plain passthrough.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import ReactThreeTestRenderer, { type ReactThreeTest } from '@react-three/test-renderer'
 import type { Mesh, Object3D } from 'three'
 import { TacticalVectorField, isClusterCyan } from './VectorViewport'
@@ -197,6 +197,105 @@ describe('TacticalVectorField — anomaly beacon mount/unmount', () => {
       <TacticalVectorField {...baseProps({ positions, clusterLabels, anomalyIndices: [] })} />,
     )
     expect(findBeaconMeshes(renderer.scene)).toHaveLength(0)
+    await renderer.unmount()
+  })
+})
+
+describe('TracerLines — skip HDBSCAN noise points (regression, 2026-08-30 sprint, Finding 2)', () => {
+  // idx 0/2 are in cluster 0; idx 1/3 are noise (clusterLabel -1). Before the
+  // fix, noise points fell through to an undefined centroid and drew a
+  // tracer segment straight to the scene origin -- not a meaningful point.
+  const positions = new Float32Array([
+    0, 0, 0, // idx 0 -- cluster 0
+    50, 50, 50, // idx 1 -- noise
+    1, 1, 1, // idx 2 -- cluster 0
+    -50, -50, -50, // idx 3 -- noise
+  ])
+  const clusterLabels = [0, -1, 0, -1]
+
+  function findTracerLineSegments(scene: ReactThreeTest.ReactThreeTestInstance) {
+    return scene.findAll((node) =>
+      Boolean((node.instance as unknown as { isLineSegments?: boolean }).isLineSegments),
+    )
+  }
+
+  it('draws one segment per non-noise point only -- none for the two noise-labeled points', async () => {
+    const renderer = await ReactThreeTestRenderer.create(
+      <TacticalVectorField {...baseProps({ positions, clusterLabels })} />,
+    )
+    const lineSegmentsNodes = findTracerLineSegments(renderer.scene)
+    expect(lineSegmentsNodes).toHaveLength(1)
+    const geometry = (
+      lineSegmentsNodes[0].instance as unknown as {
+        geometry: { attributes: { position: { count: number } } }
+      }
+    ).geometry
+    // 2 non-noise points (idx 0, 2) -> 2 segments -> 4 endpoint vertices.
+    // Pre-fix this would have been 4 points -> 8 vertices, two of them
+    // sitting at the scene origin.
+    expect(geometry.attributes.position.count).toBe(4)
+    await renderer.unmount()
+  })
+
+  it('renders no tracer lines at all when every point is noise', async () => {
+    const allNoisePositions = new Float32Array([0, 0, 0, 1, 1, 1])
+    const renderer = await ReactThreeTestRenderer.create(
+      <TacticalVectorField
+        {...baseProps({ positions: allNoisePositions, clusterLabels: [-1, -1] })}
+      />,
+    )
+    expect(findTracerLineSegments(renderer.scene)).toHaveLength(0)
+    await renderer.unmount()
+  })
+})
+
+describe('AnomalyBeacon — mock data is non-interactive (regression, 2026-08-30 sprint, Finding 1)', () => {
+  const positions = new Float32Array([0, 0, 0, 1, 1, 1])
+  const clusterLabels = [0, 0]
+
+  function findBeaconMesh(scene: ReactThreeTest.ReactThreeTestInstance) {
+    return scene.find(
+      (node) =>
+        (node.instance as unknown as { geometry?: { type?: string } }).geometry?.type ===
+        'IcosahedronGeometry',
+    )
+  }
+
+  it('clicking a mock beacon does not dispatch an explain request', async () => {
+    const onExplainRequest = vi.fn()
+    const renderer = await ReactThreeTestRenderer.create(
+      <TacticalVectorField
+        {...baseProps({
+          positions,
+          clusterLabels,
+          anomalyIndices: [0],
+          onExplainRequest,
+          isMockData: true,
+        })}
+      />,
+    )
+    const beacon = findBeaconMesh(renderer.scene)
+    await renderer.fireEvent(beacon, 'click', {})
+    expect(onExplainRequest).not.toHaveBeenCalled()
+    await renderer.unmount()
+  })
+
+  it('clicking a real (non-mock) beacon still dispatches the explain request as before', async () => {
+    const onExplainRequest = vi.fn()
+    const renderer = await ReactThreeTestRenderer.create(
+      <TacticalVectorField
+        {...baseProps({
+          positions,
+          clusterLabels,
+          anomalyIndices: [0],
+          onExplainRequest,
+          isMockData: false,
+        })}
+      />,
+    )
+    const beacon = findBeaconMesh(renderer.scene)
+    await renderer.fireEvent(beacon, 'click', {})
+    expect(onExplainRequest).toHaveBeenCalledTimes(1)
     await renderer.unmount()
   })
 })
