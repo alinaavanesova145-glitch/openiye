@@ -120,6 +120,32 @@ describe('DiagnosticSidebar', () => {
     expect(screen.getByText('llm · offline · fallback narratives')).toBeInTheDocument()
   })
 
+  // NEW 2026-08-30 (Finding 4) — the raw metric grid had zero interpretation
+  // for a non-technical viewer; a deterministic "in plain terms" summary
+  // must render alongside it, independent of whether an LLM narrative
+  // exists for this frame.
+  it('renders a plain-English "in plain terms" summary for the active frame', () => {
+    render(
+      <DiagnosticSidebar
+        streamState="connected"
+        activeFrame={makeFrame({ anomaly_indices: [], explanation: null })}
+        isLive
+      />,
+    )
+    expect(screen.getByText('in plain terms')).toBeInTheDocument()
+    expect(screen.getByText(/no unusual points/i)).toBeInTheDocument()
+  })
+
+  it('the jargon labels in the metric grid carry an explanatory hover tooltip', () => {
+    render(
+      <DiagnosticSidebar streamState="connected" activeFrame={makeFrame()} isLive />,
+    )
+    expect(screen.getByText('window_fill')).toHaveAttribute('title')
+    expect(screen.getByText('z_max')).toHaveAttribute('title')
+    expect(screen.getByText('velocity')).toHaveAttribute('title')
+    expect(screen.getByText('drift_slope')).toHaveAttribute('title')
+  })
+
   // NEW 2026-08-28 — neither indicator announced its own changes to
   // screen-reader users (a disconnect, a reconnect, an anomaly) before
   // this sprint added role="status" to both.

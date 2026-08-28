@@ -219,6 +219,59 @@ const ExplanationBlock: React.FC<{
   </div>
 )
 
+// ─── Plain-English frame summary (2026-08-30 sprint, Finding 4) ──────────────
+// window_fill/z_max/velocity/acceleration/drift_slope/cluster-shorthand are
+// raw technical outputs with zero interpretation for a non-technical viewer
+// — "there should be an explaining layer for people so everyone
+// understands" (Alina). Deterministic and template-based on purpose: always
+// available the instant a frame arrives, with no dependency on Ollama being
+// up at all — unlike the LLM narrative in ExplanationBlock's "analysis"
+// card below, which this is additive to, not a replacement for.
+
+/** Short hover/glance explanation for each raw temporal-metric label in the
+ *  grid below — a term like "drift_slope" means nothing on sight to a
+ *  non-technical viewer. */
+export const METRIC_TOOLTIPS: Record<'window_fill' | 'z_max' | 'velocity' | 'acceleration' | 'drift_slope', string> = {
+  window_fill: 'How much recent history the detector has gathered so far — 100% means it has a full baseline to compare against.',
+  z_max: 'How far the single most unusual point is from what counts as normal, in standard deviations.',
+  velocity: 'How fast the overall pattern is changing from one frame to the next.',
+  acceleration: 'Whether that rate of change is itself speeding up or slowing down.',
+  drift_slope: 'The direction and steepness of a slow, sustained trend across recent frames, as opposed to a one-off blip.',
+}
+
+/** One or two plain-English sentences translating a frame's raw
+ *  anomaly-count and temporal-regime numbers into something a non-technical
+ *  viewer can understand at a glance, without needing to know what
+ *  "z_max" or "drift_slope" mean. Pure and deterministic — never touches
+ *  the network, so it's exactly as available as the numbers it explains. */
+export function summarizeFrameForHumans(frame: VectorFrame): string {
+  const anomalyCount = frame.anomaly_indices.length
+  const pointClause =
+    anomalyCount === 0
+      ? 'No unusual points right now — every reading is within its normal range.'
+      : anomalyCount === 1
+        ? '1 point is unusual right now.'
+        : `${String(anomalyCount)} points are unusual right now.`
+
+  const temporal = frame.temporal
+  let trendClause: string
+  if (temporal.regime === 'warmup' || temporal.window_fill < 1) {
+    trendClause = 'Still gathering enough history to judge the trend with confidence.'
+  } else if (temporal.regime === 'spike') {
+    trendClause = 'This looks like a sudden, sharp spike compared to recent frames.'
+  } else if (temporal.regime === 'velocity') {
+    trendClause = 'The pattern is moving noticeably faster than usual.'
+  } else if (temporal.regime === 'acceleration') {
+    trendClause = 'That speed of change is itself accelerating.'
+  } else if (temporal.regime === 'drift') {
+    trendClause = `The whole pattern has been gradually drifting ${temporal.drift_slope >= 0 ? 'upward' : 'downward'} over recent frames.`
+  } else {
+    trendClause = 'The pattern has been stable for the last several frames.'
+  }
+
+  return `${pointClause} ${trendClause}`
+}
+
 /**
  * Frame metadata panel — renders point count, status, and cluster distribution.
  */
@@ -305,19 +358,29 @@ const FrameMetadata: React.FC<{ frame: VectorFrame }> = ({ frame }) => {
         <span style={{ color: COLORS.pinkText }}>clusters</span>
         <span>{clusterDistribution}</span>
 
-        <span style={{ color: COLORS.pinkText }}>window_fill</span>
+        <span style={{ color: COLORS.pinkText }} title={METRIC_TOOLTIPS.window_fill}>
+          window_fill
+        </span>
         <span>{(frame.temporal.window_fill * 100).toFixed(0)}%</span>
 
-        <span style={{ color: COLORS.pinkText }}>z_max</span>
+        <span style={{ color: COLORS.pinkText }} title={METRIC_TOOLTIPS.z_max}>
+          z_max
+        </span>
         <span>{frame.temporal.z_max.toFixed(2)}</span>
 
-        <span style={{ color: COLORS.pinkText }}>velocity</span>
+        <span style={{ color: COLORS.pinkText }} title={METRIC_TOOLTIPS.velocity}>
+          velocity
+        </span>
         <span>{frame.temporal.velocity.toFixed(2)}</span>
 
-        <span style={{ color: COLORS.pinkText }}>acceleration</span>
+        <span style={{ color: COLORS.pinkText }} title={METRIC_TOOLTIPS.acceleration}>
+          acceleration
+        </span>
         <span>{frame.temporal.acceleration.toFixed(2)}</span>
 
-        <span style={{ color: COLORS.pinkText }}>drift_slope</span>
+        <span style={{ color: COLORS.pinkText }} title={METRIC_TOOLTIPS.drift_slope}>
+          drift_slope
+        </span>
         <span>{frame.temporal.drift_slope.toFixed(2)}</span>
 
         <span style={{ color: COLORS.pinkText }}>frame</span>
@@ -421,6 +484,14 @@ export const DiagnosticSidebar: React.FC<DiagnosticSidebarProps> = ({
 
       {/* ── Active frame metadata ────────────────────────────────────── */}
       {activeFrame && <FrameMetadata frame={activeFrame} />}
+
+      {/* ── Plain-English summary (2026-08-30 sprint, Finding 4) ─────────
+          Deterministic, template-based, never dependent on the LLM being
+          up — see summarizeFrameForHumans above. Distinct from "analysis"
+          below, which is the LLM-generated narrative when one exists. */}
+      {activeFrame && (
+        <ExplanationBlock title="in plain terms" content={summarizeFrameForHumans(activeFrame)} />
+      )}
 
       {/* ── Explainability text ──────────────────────────────────────── */}
       {activeFrame && (activeFrame.explanation !== null || activeFrame.status === 'ANOMALY') && (
